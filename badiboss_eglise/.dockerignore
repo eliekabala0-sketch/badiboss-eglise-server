@@ -1,0 +1,14 @@
+.git
+.gitignore
+.dart_tool
+.idea
+.vscode
+build
+android/.gradle
+ios/Pods
+ios/.symlinks
+linux/flutter/ephemeral
+macos/Flutter/ephemeral
+windows/flutter/ephemeral
+test
+README.md
