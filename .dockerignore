@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__
+*.db
+*.zip
+badiboss_eglise/.dart_tool
+badiboss_eglise/.idea
+badiboss_eglise/build
+badiboss_eglise/android/.gradle
+badiboss_eglise/ios/Pods
+badiboss_eglise/ios/.symlinks
+badiboss_eglise/linux/flutter/ephemeral
+badiboss_eglise/macos/Flutter/ephemeral
+badiboss_eglise/windows/flutter/ephemeral
+badiboss_eglise/test
