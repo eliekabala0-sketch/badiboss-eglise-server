@@ -18,16 +18,18 @@ ENV PATH="$FLUTTER_HOME/bin:$FLUTTER_HOME/bin/cache/dart-sdk/bin:$PATH"
 
 WORKDIR /app
 
-COPY pubspec.yaml pubspec.lock ./
+# Railway peut builder depuis la racine du repo même si le Dockerfile est dans badiboss_eglise/
+# => on copie explicitement depuis badiboss_eglise/
+COPY badiboss_eglise/pubspec.yaml badiboss_eglise/pubspec.lock ./
 RUN flutter --version && flutter config --enable-web && flutter pub get
 
-COPY . .
+COPY badiboss_eglise/ ./
 RUN flutter build web --release
 
 FROM nginx:alpine
 
 # Railway provides PORT env var at runtime; nginx official image supports templates via envsubst
-COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY badiboss_eglise/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/build/web /usr/share/nginx/html
 
 EXPOSE 8080
