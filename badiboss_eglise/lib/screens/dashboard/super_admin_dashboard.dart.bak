@@ -1,0 +1,80 @@
+import '../pages/cartes_membres_page.dart';
+import '../pages/presences_page.dart';
+import '../pages/finances_page.dart';
+import '../pages/annonces_page.dart';
+import 'package:flutter/material.dart';
+
+class SuperAdminDashboard extends StatelessWidget {
+  final String token;
+  final String phone;
+  final String role;
+  final String codeEglise;
+
+  const SuperAdminDashboard({
+    super.key,
+    required this.token,
+    required this.phone,
+    required this.role,
+    required this.codeEglise,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Super Admin Dashboard'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Téléphone : $phone'),
+            Text('Rôle : $role'),
+            Text('Code Église : $codeEglise'),
+            const SizedBox(height: 20),
+            const Text(
+              'Bienvenue dans Badiboss Église',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+Wrap(
+  spacing: 12,
+  runSpacing: 12,
+  children: [
+    ElevatedButton(
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const CartesMembresPage()),
+      ),
+      child: const Text('Cartes Membres'),
+    ),
+    ElevatedButton(
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const PresencesPage()),
+      ),
+      child: const Text('Présences'),
+    ),
+    ElevatedButton(
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const FinancesPage()),
+      ),
+      child: const Text('Finances'),
+    ),
+    ElevatedButton(
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const AnnoncesPage()),
+      ),
+      child: const Text('Annonces'),
+    ),
+  ],
+)
+

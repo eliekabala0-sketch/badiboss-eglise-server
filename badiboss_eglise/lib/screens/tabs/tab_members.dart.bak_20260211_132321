@@ -1,0 +1,283 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../models/member.dart';
+import '../../services/local_members_store.dart';
+import '../add_member_admin_screen.dart';
+import '../import_members_csv_screen.dart';
+import '../member_neighbors_screen.dart';
+import '../member_self_register_screen.dart';
+import '../pending_members_screen.dart';
+
+class TabMembers extends StatefulWidget {
+  const TabMembers({super.key});
+
+  @override
+  State<TabMembers> createState() => _TabMembersState();
+}
+
+class _TabMembersState extends State<TabMembers> {
+  bool _loading = true;
+
+  String _churchCode = '';
+  String _role = '';
+
+  String _query = '';
+  List<Member> _items = [];
+
+  bool get _isAdmin =>
+      _role == 'admin' || _role == 'pasteur' || _role == 'super_admin';
+
+  bool get _isMember => _role == 'member';
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    setState(() => _loading = true);
+    final prefs = await SharedPreferences.getInstance();
+    _churchCode = (prefs.getString('auth_church_code') ?? '').trim();
+    _role = (prefs.getString('auth_role') ?? '').trim();
+    await _reload();
+  }
+
+  Future<void> _reload() async {
+    if (_churchCode.isEmpty) {
+      setState(() {
+        _items = [];
+        _loading = false;
+      });
+      return;
+    }
+
+    final all = await LocalMembersStore.loadByChurch(_churchCode);
+    all.sort((a, b) =>
+        a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()));
+
+    setState(() {
+      _items = all;
+      _loading = false;
+    });
+  }
+
+  int get _pendingCount =>
+      _items.where((m) => m.status == MemberStatus.pending).length;
+
+  List<Member> get _filtered {
+    final q = _query.trim();
+    if (q.isEmpty) return _items;
+    return _items.where((m) => m.matchesQuery(q)).toList();
+  }
+
+  Future<void> _openSelfRegister() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MemberSelfRegisterScreen()),
+    );
+    await _reload();
+  }
+
+  Future<void> _openImportCsv() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ImportMembersCsvScreen()),
+    );
+    await _reload();
+  }
+
+  Future<void> _openAddManual() async {
+    final res = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AddMemberAdminScreen()),
+    );
+    if (res == true) await _reload();
+  }
+
+  Future<void> _openPending() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PendingMembersScreen()),
+    );
+    await _reload();
+  }
+
+  Future<void> _openMyNeighbors() async {
+    if (!_isMember) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MemberNeighborsScreen()),
+    );
+  }
+
+  Future<void> _approve(Member m) async {
+    if (!_isAdmin) return;
+    await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.active));
+    await _reload();
+  }
+
+  Future<void> _suspend(Member m) async {
+    if (!_isAdmin) return;
+    await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.suspended));
+    await _reload();
+  }
+
+  Future<void> _ban(Member m) async {
+    if (!_isAdmin) return;
+    await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.banned));
+    await _reload();
+  }
+
+  Future<void> _delete(Member m) async {
+    if (!_isAdmin) return;
+    await LocalMembersStore.removeById(m.id);
+    await _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _filtered;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Membres'),
+        actions: [
+          IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
+          if (_isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Center(
+                child: Badge(
+                  label: Text("$_pendingCount"),
+                  isLabelVisible: _pendingCount > 0,
+                  child: IconButton(
+                    tooltip: "Membres à valider",
+                    onPressed: _openPending,
+                    icon: const Icon(Icons.verified_outlined),
+                  ),
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'self') await _openSelfRegister();
+              if (v == 'import') await _openImportCsv();
+              if (v == 'manual') await _openAddManual();
+              if (v == 'pending') await _openPending();
+              if (v == 'neighbors') await _openMyNeighbors();
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'self',
+                child: Text("Inscription (membre)"),
+              ),
+              if (_isAdmin)
+                const PopupMenuItem(
+                  value: 'manual',
+                  child: Text("Ajout manuel (admin)"),
+                ),
+              if (_isAdmin)
+                const PopupMenuItem(
+                  value: 'pending',
+                  child: Text("À valider (pending)"),
+                ),
+              if (_isAdmin)
+                const PopupMenuItem(
+                  value: 'import',
+                  child: Text("Import CSV (admin/pasteur)"),
+                ),
+              if (_isMember)
+                const PopupMenuItem(
+                  value: 'neighbors',
+                  child: Text("Mes voisins"),
+                ),
+            ],
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _churchCode.isEmpty
+              ? const Center(
+                  child: Text("Aucune église sélectionnée (churchCode vide)."))
+              : Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                          hintText:
+                              "Rechercher (nom, téléphone, commune, quartier, zone, province...)",
+                        ),
+                        onChanged: (v) => setState(() => _query = v),
+                      ),
+                    ),
+                    Expanded(
+                      child: items.isEmpty
+                          ? const Center(child: Text("Aucun membre."))
+                          : ListView.separated(
+                              itemCount: items.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, i) {
+                                final m = items[i];
+                                final subtitle = "${m.phone}\n"
+                                    "${m.commune} • ${m.quartier} • ${m.zone}\n"
+                                    "statut: ${m.status.name} • sexe: ${m.sex.name} • état civil: ${m.maritalStatus.name}";
+                                return ListTile(
+                                  title: Text(m.fullName),
+                                  subtitle: Text(subtitle),
+                                  isThreeLine: true,
+                                  trailing: _isAdmin
+                                      ? PopupMenuButton<String>(
+                                          onSelected: (v) async {
+                                            if (v == 'approve') await _approve(m);
+                                            if (v == 'suspend') await _suspend(m);
+                                            if (v == 'ban') await _ban(m);
+                                            if (v == 'delete') await _delete(m);
+                                          },
+                                          itemBuilder: (_) => [
+                                            if (m.status == MemberStatus.pending)
+                                              const PopupMenuItem(
+                                                value: 'approve',
+                                                child: Text("Valider"),
+                                              ),
+                                            const PopupMenuItem(
+                                              value: 'suspend',
+                                              child: Text("Suspendre"),
+                                            ),
+                                            const PopupMenuItem(
+                                              value: 'ban',
+                                              child: Text("Bannir"),
+                                            ),
+                                            const PopupMenuItem(
+                                              value: 'delete',
+                                              child: Text("Supprimer"),
+                                            ),
+                                          ],
+                                        )
+                                      : null,
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+      floatingActionButton: _isAdmin
+          ? FloatingActionButton.extended(
+              onPressed: _openAddManual,
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text("Ajouter"),
+            )
+          : FloatingActionButton.extended(
+              onPressed: _openSelfRegister,
+              icon: const Icon(Icons.person_add),
+              label: const Text("S'inscrire"),
+            ),
+    );
+  }
+}

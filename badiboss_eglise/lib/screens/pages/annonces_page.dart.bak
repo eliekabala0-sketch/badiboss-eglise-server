@@ -1,0 +1,13 @@
+import 'package:flutter/material.dart';
+
+class AnnoncesPage extends StatelessWidget {
+  const AnnoncesPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      appBar: AppBar(title: Text('Annonces')),
+      body: Center(child: Text('Page Annonces (OK)')),
+    );
+  }
+}

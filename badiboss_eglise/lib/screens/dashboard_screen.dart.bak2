@@ -1,0 +1,41 @@
+import 'package:flutter/material.dart';
+
+import 'dashboard/pasteur_dashboard.dart';
+// ajoute ici d'autres dashboards si tu en as
+
+class DashboardScreen extends StatelessWidget {
+  final String? token;
+  final String? phone;
+  final String? role;
+  final String? codeEglise;
+
+  const DashboardScreen({
+    super.key,
+    this.token,
+    this.phone,
+    this.role,
+    this.codeEglise,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final r = (role ?? '').toLowerCase();
+
+    // Pour l’instant on route proprement sans casser.
+    if (r.contains('pasteur')) {
+      return PasteurDashboard(
+        token: token,
+        phone: phone,
+        role: role,
+        codeEglise: codeEglise,
+      );
+    }
+
+    // Fallback (évite crash si rôle inconnu)
+    return Scaffold(
+      appBar: AppBar(title: const Text('Dashboard')),
+      body:
+          const Center(child: Text('Rôle non reconnu / Dashboard à compléter')),
+    );
+  }
+}

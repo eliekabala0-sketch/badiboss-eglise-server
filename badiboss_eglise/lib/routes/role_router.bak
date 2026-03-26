@@ -1,0 +1,74 @@
+import 'package:flutter/material.dart';
+
+import '../screens/dashboard/super_admin_dashboard.dart';
+import '../screens/dashboard/admin_dashboard.dart';
+import '../screens/dashboard/pasteur_dashboard.dart';
+import '../screens/dashboard/protocole_dashboard.dart';
+import '../screens/dashboard/membre_dashboard.dart';
+
+class RoleRouter {
+  static void go({
+    required BuildContext context,
+    required String token,
+    required String phone,
+    required String role,
+    required String codeEglise,
+  }) {
+    final r = role.trim().toLowerCase();
+
+    Widget target;
+
+    switch (r) {
+      case 'super_admin':
+        target = SuperAdminDashboard(
+          token: token,
+          phone: phone,
+          role: role,
+          codeEglise: codeEglise,
+        );
+        break;
+
+      case 'admin':
+        target = AdminDashboard(
+          token: token,
+          phone: phone,
+          role: role,
+          codeEglise: codeEglise,
+        );
+        break;
+
+      case 'pasteur':
+        target = PasteurDashboard(
+          token: token,
+          phone: phone,
+          role: role,
+          codeEglise: codeEglise,
+        );
+        break;
+
+      case 'protocole':
+        target = ProtocoleDashboard(
+          token: token,
+          phone: phone,
+          role: role,
+          codeEglise: codeEglise,
+        );
+        break;
+
+      // par défaut : membre
+      default:
+        target = MembreDashboard(
+          token: token,
+          phone: phone,
+          role: role,
+          codeEglise: codeEglise,
+        );
+        break;
+    }
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => target),
+    );
+  }
+}

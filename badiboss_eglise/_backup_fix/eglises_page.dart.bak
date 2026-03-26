@@ -1,0 +1,108 @@
+import 'package:flutter/material.dart';
+
+/// Page SAFE : liste des églises (exemple) + actions "validation/abonnement"
+/// Objectif : compilation stable. Ensuite on reconnecte à tes vrais services.
+class EglisesPage extends StatefulWidget {
+  const EglisesPage({super.key});
+
+  @override
+  State<EglisesPage> createState() => _EglisesPageState();
+}
+
+class _EglisesPageState extends State<EglisesPage> {
+  final List<_ChurchLite> _churches = [
+    _ChurchLite(code: 'EGL-001', name: 'Église Test 1', isValidated: false),
+    _ChurchLite(code: 'EGL-002', name: 'Église Test 2', isValidated: true),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Églises'),
+      ),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: _churches.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, i) {
+          final c = _churches[i];
+          return Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(c.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Text('Code : ${c.code}'),
+                  const SizedBox(height: 6),
+                  Text('Validée : ${c.isValidated ? "Oui" : "Non"}'),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () => _validateChurchAfterPayment(c.code),
+                        child: const Text('Valider après paiement'),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => _renewSubscription(c.code, 'mensuel'),
+                        child: const Text('Renouveler (mensuel)'),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => _renewSubscription(c.code, 'annuel'),
+                        child: const Text('Renouveler (annuel)'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// SAFE: au lieu d’appeler une fonction externe qui casse la compile,
+  /// on garde une action locale stable.
+  void _validateChurchAfterPayment(String codeEglise) {
+    setState(() {
+      final idx = _churches.indexWhere((e) => e.code == codeEglise);
+      if (idx != -1) _churches[idx] = _churches[idx].copyWith(isValidated: true);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Église $codeEglise validée (SAFE)')),
+    );
+  }
+
+  /// SAFE: accepte (code, plan) en positionnel.
+  void _renewSubscription(String codeEglise, String plan) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Abonnement renouvelé: $codeEglise ($plan) (SAFE)')),
+    );
+  }
+}
+
+class _ChurchLite {
+  final String code;
+  final String name;
+  final bool isValidated;
+
+  const _ChurchLite({
+    required this.code,
+    required this.name,
+    required this.isValidated,
+  });
+
+  _ChurchLite copyWith({String? code, String? name, bool? isValidated}) {
+    return _ChurchLite(
+      code: code ?? this.code,
+      name: name ?? this.name,
+      isValidated: isValidated ?? this.isValidated,
+    );
+  }
+}

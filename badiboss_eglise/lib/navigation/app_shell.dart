@@ -1,0 +1,262 @@
+import 'package:flutter/material.dart';
+
+import '../screens/pages/members_page.dart';
+import '../screens/pages/offering_page.dart';
+import '../screens/pages/reports_page.dart';
+import '../screens/pages/settings_page.dart';
+
+class AppShell extends StatefulWidget {
+  final String phone;
+  final String role;
+  final String codeEglise;
+  final String token;
+
+  const AppShell({
+    super.key,
+    required this.phone,
+    required this.role,
+    required this.codeEglise,
+    required this.token,
+  });
+
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  int _index = 0;
+
+  List<_NavItem> get _items => [
+        _NavItem(
+          label: 'Dashboard',
+          icon: Icons.dashboard,
+          page: _DashboardHome(
+            phone: widget.phone,
+            role: widget.role,
+            codeEglise: widget.codeEglise,
+            token: widget.token,
+          ),
+        ),
+        _NavItem(
+          label: 'Membres',
+          icon: Icons.people,
+          page: MembersPage(
+            phone: widget.phone,
+            role: widget.role,
+            codeEglise: widget.codeEglise,
+            token: widget.token,
+          ),
+        ),
+        _NavItem(
+          label: 'Offrandes',
+          icon: Icons.volunteer_activism,
+          page: OfferingPage(
+            phone: widget.phone,
+            role: widget.role,
+            codeEglise: widget.codeEglise,
+            token: widget.token,
+          ),
+        ),
+        _NavItem(
+          label: 'Rapports',
+          icon: Icons.bar_chart,
+          page: ReportsPage(
+            phone: widget.phone,
+            role: widget.role,
+            codeEglise: widget.codeEglise,
+            token: widget.token,
+          ),
+        ),
+        _NavItem(
+          label: 'Paramètres',
+          icon: Icons.settings,
+          page: SettingsPage(
+            phone: widget.phone,
+            role: widget.role,
+            codeEglise: widget.codeEglise,
+            token: widget.token,
+          ),
+        ),
+      ];
+
+  void _logout() {
+    // Ici on renvoie vers login (si tu as une route "/login", active-la)
+    // Pour l’instant on ferme juste le shell:
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(items[_index].label),
+      ),
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.verified_user),
+                title: Text(widget.role),
+                subtitle:
+                    Text('Église: ${widget.codeEglise}\nTél: ${widget.phone}'),
+              ),
+              const Divider(),
+              for (int i = 0; i < items.length; i++)
+                ListTile(
+                  leading: Icon(items[i].icon),
+                  title: Text(items[i].label),
+                  selected: i == _index,
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() => _index = i);
+                  },
+                ),
+              const Spacer(),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Déconnexion'),
+                onTap: _logout,
+              ),
+            ],
+          ),
+        ),
+      ),
+      body: items[_index].page,
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        type: BottomNavigationBarType.fixed,
+        onTap: (i) => setState(() => _index = i),
+        items: [
+          for (final it in items)
+            BottomNavigationBarItem(
+              icon: Icon(it.icon),
+              label: it.label,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NavItem {
+  final String label;
+  final IconData icon;
+  final Widget page;
+
+  _NavItem({required this.label, required this.icon, required this.page});
+}
+
+/// ✅ Dashboard d’accueil (copie de ton écran actuel en “propre”)
+class _DashboardHome extends StatelessWidget {
+  final String phone;
+  final String role;
+  final String codeEglise;
+  final String token;
+
+  const _DashboardHome({
+    required this.phone,
+    required this.role,
+    required this.codeEglise,
+    required this.token,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: ListView(
+        children: [
+          const Text(
+            'Super Admin Dashboard',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 12),
+          Text('Téléphone : $phone'),
+          Text('Rôle : $role'),
+          Text('Code Église : $codeEglise'),
+          const SizedBox(height: 16),
+          const Text(
+            'Bienvenue dans Badiboss Église',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 20),
+
+          // ✅ Boutons rapides
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _QuickBtn(
+                label: 'Membres',
+                icon: Icons.people,
+                onTap: () => _goTab(context, 1),
+              ),
+              _QuickBtn(
+                label: 'Offrandes',
+                icon: Icons.volunteer_activism,
+                onTap: () => _goTab(context, 2),
+              ),
+              _QuickBtn(
+                label: 'Rapports',
+                icon: Icons.bar_chart,
+                onTap: () => _goTab(context, 3),
+              ),
+              _QuickBtn(
+                label: 'Paramètres',
+                icon: Icons.settings,
+                onTap: () => _goTab(context, 4),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _goTab(BuildContext context, int index) {
+    // On cherche le AppShell parent et on change d’onglet via state
+    // (astuce simple: on ferme le drawer si ouvert puis on pop rien)
+    final state = context.findAncestorStateOfType<_AppShellState>();
+    if (state != null) {
+      state.setState(() => state._index = index);
+    }
+  }
+}
+
+class _QuickBtn extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _QuickBtn(
+      {required this.label, required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 160,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.black12),
+        ),
+        child: Row(
+          children: [
+            Icon(icon),
+            const SizedBox(width: 10),
+            Expanded(
+                child: Text(label,
+                    style: const TextStyle(fontWeight: FontWeight.w600))),
+          ],
+        ),
+      ),
+    );
+  }
+}

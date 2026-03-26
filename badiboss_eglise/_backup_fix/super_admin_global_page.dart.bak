@@ -1,0 +1,436 @@
+import 'package:flutter/material.dart';
+import '../../state/app_state.dart';
+
+class SuperAdminGlobalPage extends StatefulWidget {
+  const SuperAdminGlobalPage({super.key});
+
+  @override
+  State<SuperAdminGlobalPage> createState() => _SuperAdminGlobalPageState();
+}
+
+class _SuperAdminGlobalPageState extends State<SuperAdminGlobalPage> {
+  final _inspectCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _inspectCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final churches = AppState.I.getAllChurchesSafe();
+
+    final total = churches.length;
+    final validated = churches.where((c) => c.isValidated).length;
+    final banned = churches.where((c) => c.banned).length;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Super Admin — Vision globale'),
+        actions: [
+          IconButton(
+            tooltip: 'Rafraîchir',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            _StatsHeader(
+              total: total,
+              validated: validated,
+              banned: banned,
+              currentInspect: AppState.I.superAdminCurrentChurch,
+            ),
+            const SizedBox(height: 12),
+
+            // Entrer dans une église par code (inspection)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _inspectCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Code église (inspection)',
+                          hintText: 'Ex: EGL-001',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        final code = _inspectCtrl.text.trim();
+                        if (code.isEmpty) return;
+                        final c = AppState.I.getChurchByCode(code);
+                        if (c == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("Église introuvable")),
+                          );
+                          return;
+                        }
+                        AppState.I.superAdminEnterChurch(code);
+                        setState(() {});
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                SuperAdminChurchInspectPage(codeEglise: code),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.login),
+                      label: const Text('Inspecter'),
+                    )
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            Expanded(
+              child: ListView.separated(
+                itemCount: churches.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (context, i) {
+                  final c = churches[i];
+                  return _ChurchTile(
+                    c: c,
+                    onInspect: () {
+                      AppState.I.superAdminEnterChurch(c.codeEglise);
+                      setState(() {});
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SuperAdminChurchInspectPage(
+                              codeEglise: c.codeEglise),
+                        ),
+                      );
+                    },
+                    onToggleBan: () {
+                      AppState.I.superAdminToggleBan(c.codeEglise);
+                      setState(() {});
+                    },
+                    onValidate: () async {
+                      final res = await showDialog<_ValidateResult>(
+                        context: context,
+                        builder: (_) =>
+                            _ValidateDialog(codeEglise: c.codeEglise),
+                      );
+                      if (res == null) return;
+                      AppState.I.superAdminValidateChurch(
+                        c.codeEglise,
+                        plan: res.plan,
+                        paidUntil: res.paidUntil,
+                      );
+                      setState(() {});
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SuperAdminChurchInspectPage extends StatelessWidget {
+  final String codeEglise;
+
+  const SuperAdminChurchInspectPage({
+    super.key,
+    required this.codeEglise,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppState.I.getChurchByCode(codeEglise);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Inspection — $codeEglise'),
+        actions: [
+          TextButton.icon(
+            onPressed: () {
+              AppState.I.superAdminExitChurch();
+              Navigator.pop(context);
+            },
+            icon: const Icon(Icons.logout),
+            label: const Text('Sortir'),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: c == null
+            ? const Center(child: Text("Église introuvable"))
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.church),
+                      title: Text(c.nom),
+                      subtitle: Text('Code: ${c.codeEglise}'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Validée: ${c.isValidated ? "OUI" : "NON"}'),
+                          Text('Bannie: ${c.banned ? "OUI" : "NON"}'),
+                          Text('Plan: ${c.plan}'),
+                          Text(
+                              'Payé jusqu’au: ${c.paidUntil?.toIso8601String() ?? "—"}'),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            final res = await showDialog<_ValidateResult>(
+                              context: context,
+                              builder: (_) =>
+                                  _ValidateDialog(codeEglise: c.codeEglise),
+                            );
+                            if (res == null) return;
+                            AppState.I.superAdminValidateChurch(
+                              c.codeEglise,
+                              plan: res.plan,
+                              paidUntil: res.paidUntil,
+                            );
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text(
+                                      "Église validée / abonnement mis à jour")),
+                            );
+                          },
+                          icon: const Icon(Icons.verified),
+                          label: const Text('Valider + abonnement'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            AppState.I.superAdminToggleBan(c.codeEglise);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                  content: Text(c.banned
+                                      ? "Église débannie"
+                                      : "Église bannie")),
+                            );
+                          },
+                          icon: const Icon(Icons.block),
+                          label: Text(c.banned ? 'Débannir' : 'Bannir'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    "NB: Le Super Admin reste dans son compte. Il peut inspecter une église, puis sortir et aller dans une autre.",
+                    style: TextStyle(fontStyle: FontStyle.italic),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _ChurchTile extends StatelessWidget {
+  final ChurchInfo c;
+  final VoidCallback onInspect;
+  final VoidCallback onToggleBan;
+  final VoidCallback onValidate;
+
+  const _ChurchTile({
+    required this.c,
+    required this.onInspect,
+    required this.onToggleBan,
+    required this.onValidate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final status = <String>[
+      if (c.isValidated) 'Validée' else 'Non validée',
+      if (c.banned) 'Bannie' else 'Active',
+      'Plan: ${c.plan}',
+    ].join(' • ');
+
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.apartment),
+        title: Text(c.nom),
+        subtitle: Text('Code: ${c.codeEglise}\n$status'),
+        isThreeLine: true,
+        trailing: Wrap(
+          spacing: 6,
+          children: [
+            IconButton(
+              tooltip: 'Inspecter',
+              onPressed: onInspect,
+              icon: const Icon(Icons.search),
+            ),
+            IconButton(
+              tooltip: c.banned ? 'Débannir' : 'Bannir',
+              onPressed: onToggleBan,
+              icon: const Icon(Icons.block),
+            ),
+            IconButton(
+              tooltip: 'Valider',
+              onPressed: onValidate,
+              icon: const Icon(Icons.verified),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatsHeader extends StatelessWidget {
+  final int total;
+  final int validated;
+  final int banned;
+  final String? currentInspect;
+
+  const _StatsHeader({
+    required this.total,
+    required this.validated,
+    required this.banned,
+    required this.currentInspect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Statistiques globales',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _Pill(label: 'Total', value: '$total'),
+                _Pill(label: 'Validées', value: '$validated'),
+                _Pill(label: 'Bannies', value: '$banned'),
+                _Pill(label: 'Inspection', value: currentInspect ?? '—'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _Pill({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      label: Text('$label: $value'),
+    );
+  }
+}
+
+class _ValidateResult {
+  final String plan;
+  final DateTime paidUntil;
+
+  _ValidateResult(this.plan, this.paidUntil);
+}
+
+class _ValidateDialog extends StatefulWidget {
+  final String codeEglise;
+  const _ValidateDialog({required this.codeEglise});
+
+  @override
+  State<_ValidateDialog> createState() => _ValidateDialogState();
+}
+
+class _ValidateDialogState extends State<_ValidateDialog> {
+  String _plan = 'mensuel';
+  int _months = 1;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Valider ${widget.codeEglise}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<String>(
+            value: _plan,
+            items: const [
+              DropdownMenuItem(value: 'mensuel', child: Text('Mensuel')),
+              DropdownMenuItem(
+                  value: 'trimestriel', child: Text('Trimestriel')),
+              DropdownMenuItem(value: 'annuel', child: Text('Annuel')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() {
+                _plan = v;
+                _months = (v == 'mensuel')
+                    ? 1
+                    : (v == 'trimestriel')
+                        ? 3
+                        : 12;
+              });
+            },
+            decoration: const InputDecoration(
+              labelText: 'Plan',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text('Durée: $_months mois'),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annuler')),
+        ElevatedButton(
+          onPressed: () {
+            final until = DateTime.now().add(Duration(days: 30 * _months));
+            Navigator.pop(context, _ValidateResult(_plan, until));
+          },
+          child: const Text('Valider'),
+        ),
+      ],
+    );
+  }
+}

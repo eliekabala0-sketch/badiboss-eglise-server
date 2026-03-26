@@ -1,0 +1,120 @@
+import 'package:flutter/material.dart';
+import 'api_client.dart';
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final codeCtrl = TextEditingController(text: "CH001");
+  final phoneCtrl = TextEditingController();
+  final passCtrl = TextEditingController();
+  bool loading = false;
+  String error = "";
+
+  Future<void> doLogin() async {
+    setState(() { loading = true; error = ""; });
+
+    final r = await ApiClient.post("/auth/login", {
+      "codeEglise": codeCtrl.text.trim(),
+      "phone": phoneCtrl.text.trim(),
+      "password": passCtrl.text.trim(),
+    });
+
+    if (!mounted) return;
+
+    if (!r.ok) {
+      setState(() { loading = false; error = r.message; });
+      return;
+    }
+
+    final data = r.data as Map;
+    ApiClient.token = data["token"];
+
+    final role = (data["role"] ?? "").toString();
+    final status = (data["status"] ?? "").toString();
+
+    setState(() { loading = false; });
+
+    if (role == "super_admin") {
+      Navigator.pushReplacementNamed(context, "/admin");
+      return;
+    }
+
+    if (status != "approved") {
+      setState(() { error = "Compte créé, en attente de validation par le Super Admin."; });
+      return;
+    }
+
+    // Ici: écran membre (plus tard). Pour l’instant on affiche succès.
+    setState(() { error = "Connexion réussie (membre)."; });
+  }
+
+  InputDecoration deco(String label) {
+    return InputDecoration(
+      labelText: label,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(18),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 24),
+                  const Text("Badiboss Église", textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 32, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 22),
+
+                  TextField(controller: codeCtrl, decoration: deco("Code Église")),
+                  const SizedBox(height: 12),
+                  TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: deco("Téléphone")),
+                  const SizedBox(height: 12),
+                  TextField(controller: passCtrl, obscureText: true, decoration: deco("Mot de passe")),
+                  const SizedBox(height: 14),
+
+                  if (error.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(error, textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600)),
+                    ),
+
+                  ElevatedButton.icon(
+                    onPressed: loading ? null : doLogin,
+                    icon: loading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
+                    label: const Text("Se connecter"),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                  ),
+
+                  const SizedBox(height: 10),
+                  TextButton(
+                    onPressed: () => Navigator.pushNamed(context, "/register"),
+                    child: const Text("Créer un compte (inscription)"),
+                  ),
+
+                  const SizedBox(height: 18),
+                  const Text("App personnalisée — Contact : +243 838 918 883",
+                      textAlign: TextAlign.center, style: TextStyle(color: Colors.black54)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

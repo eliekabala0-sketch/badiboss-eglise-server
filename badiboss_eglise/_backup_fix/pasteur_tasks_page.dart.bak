@@ -1,0 +1,137 @@
+import 'package:flutter/material.dart';
+import '../../state/app_state.dart';
+
+class PasteurTasksPage extends StatefulWidget {
+  final String codeEglise;
+  const PasteurTasksPage({super.key, required this.codeEglise});
+
+  @override
+  State<PasteurTasksPage> createState() => _PasteurTasksPageState();
+}
+
+class _PasteurTasksPageState extends State<PasteurTasksPage> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tasks = AppState.I.tasksForChurch(widget.codeEglise);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Tâches (Pasteur)')),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _ctrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Nouvelle tâche (custom)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: () {
+                    final v = _ctrl.text.trim();
+                    if (v.isEmpty) return;
+                    setState(
+                        () => AppState.I.addCustomTask(widget.codeEglise, v));
+                    _ctrl.clear();
+                  },
+                  child: const Text('Ajouter'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: ListView.separated(
+                itemCount: tasks.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, i) {
+                  final t = tasks[i];
+                  return ListTile(
+                    title: Text(t.titre),
+                    subtitle: Text(
+                      'Assigné à: ${t.assignedToUserId ?? "—"} | custom=${t.isCustom} | verrouillé=${t.locked}',
+                    ),
+                    leading: Checkbox(
+                      value: t.done,
+                      onChanged: (_) =>
+                          setState(() => AppState.I.toggleDoneTask(t.id)),
+                    ),
+                    trailing: Wrap(
+                      spacing: 8,
+                      children: [
+                        IconButton(
+                          tooltip: 'Verrouiller/Déverrouiller',
+                          onPressed: () =>
+                              setState(() => AppState.I.toggleLockTask(t.id)),
+                          icon: Icon(t.locked ? Icons.lock : Icons.lock_open),
+                        ),
+                        IconButton(
+                          tooltip: 'Assigner',
+                          onPressed: () async {
+                            final userId =
+                                await _pickUserId(context, widget.codeEglise);
+                            if (!mounted) return;
+                            setState(() => AppState.I.assignTask(t.id, userId));
+                          },
+                          icon: const Icon(Icons.person_add),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _pickUserId(BuildContext context, String codeEglise) async {
+    final list =
+        AppState.I.members.where((m) => m.codeEglise == codeEglise).toList();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Assigner à…'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 350,
+            child: ListView.builder(
+              itemCount: list.length + 1,
+              itemBuilder: (_, i) {
+                if (i == 0) {
+                  return ListTile(
+                    title: const Text('Aucun (retirer assignation)'),
+                    onTap: () => Navigator.pop(ctx, null),
+                  );
+                }
+                final m = list[i - 1];
+                return ListTile(
+                  title: Text(m.nom),
+                  subtitle:
+                      Text('id=${m.id} | ${m.sexe.name} | ${m.etatCivil.name}'),
+                  onTap: () => Navigator.pop(ctx, m.id),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

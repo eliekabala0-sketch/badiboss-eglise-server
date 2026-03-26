@@ -1,0 +1,94 @@
+import 'package:flutter/material.dart';
+import '../../state/app_state.dart';
+
+class PasteurIrreguliersPage extends StatefulWidget {
+  final String codeEglise;
+  const PasteurIrreguliersPage({super.key, required this.codeEglise});
+
+  @override
+  State<PasteurIrreguliersPage> createState() => _PasteurIrreguliersPageState();
+}
+
+class _PasteurIrreguliersPageState extends State<PasteurIrreguliersPage> {
+  @override
+  Widget build(BuildContext context) {
+    final irregulars = AppState.I.irregularMembers(widget.codeEglise);
+    final bergers = AppState.I.members
+        .where((m) => m.codeEglise == widget.codeEglise)
+        .toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Irréguliers → Bergers (Pasteur)')),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(12),
+        itemCount: irregulars.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (_, i) {
+          final m = irregulars[i];
+          final bergerName = bergers
+              .firstWhere(
+                (b) => b.id == m.bergerId,
+                orElse: () => MemberInfo(
+                  id: '',
+                  codeEglise: widget.codeEglise,
+                  nom: '—',
+                  phone: '',
+                  sexe: Sexe.homme,
+                  etatCivil: EtatCivil.celibataire,
+                ),
+              )
+              .nom;
+
+          return Card(
+            child: ListTile(
+              title: Text(m.nom),
+              subtitle: Text(
+                  'Berger: $bergerName | phone=${m.phone} | ${m.sexe.name} | ${m.etatCivil.name}'),
+              trailing: IconButton(
+                icon: const Icon(Icons.person_search),
+                onPressed: () async {
+                  final bergerId = await _pickBerger(context, bergers);
+                  if (!mounted) return;
+                  setState(() => AppState.I.assignBerger(m.id, bergerId));
+                },
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<String?> _pickBerger(
+      BuildContext context, List<MemberInfo> list) async {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Choisir un berger'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 350,
+            child: ListView.builder(
+              itemCount: list.length + 1,
+              itemBuilder: (_, i) {
+                if (i == 0) {
+                  return ListTile(
+                    title: const Text('Aucun (retirer berger)'),
+                    onTap: () => Navigator.pop(ctx, null),
+                  );
+                }
+                final m = list[i - 1];
+                return ListTile(
+                  title: Text(m.nom),
+                  subtitle: Text('id=${m.id}'),
+                  onTap: () => Navigator.pop(ctx, m.id),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

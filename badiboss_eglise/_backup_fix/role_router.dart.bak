@@ -1,0 +1,85 @@
+import 'package:flutter/material.dart';
+
+import '../screens/pages/eglises_page.dart';
+import '../screens/pages/super_admin_global_page.dart';
+import '../screens/pages/pasteur_irreguliers_page.dart';
+import '../screens/pages/pasteur_tasks_page.dart';
+
+class RoleRouter extends StatelessWidget {
+  final String role;
+  final String phone;
+  final String? codeEglise;
+
+  const RoleRouter({
+    super.key,
+    required this.role,
+    required this.phone,
+    this.codeEglise,
+  });
+
+  /// Utilisable comme: RoleRouter.home(role: 'pasteur', phone: '...', codeEglise: '...')
+  static Widget home({
+    required String role,
+    required String phone,
+    String? codeEglise,
+  }) {
+    return RoleRouter(role: role, phone: phone, codeEglise: codeEglise);
+  }
+
+  /// Utilisable comme: RoleRouter.go(context, role: ..., phone: ...)
+  static void go(
+    BuildContext context, {
+    required String role,
+    required String phone,
+    String? codeEglise,
+  }) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => RoleRouter(role: role, phone: phone, codeEglise: codeEglise),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    switch (role.trim().toLowerCase()) {
+      case 'super_admin':
+      case 'superadmin':
+      case 'super admin':
+        return const SuperAdminGlobalPage();
+
+      case 'admin':
+        return EglisesPage(
+          mode: EglisesPageMode.admin,
+          phone: phone,
+          codeEglise: codeEglise,
+        );
+
+      case 'pasteur':
+        // Pour l’instant, on revient en “bloc 2”: on laisse une page stable
+        // et on réactive irréguliers / tâches plus tard.
+        return EglisesPage(
+          mode: EglisesPageMode.pasteur,
+          phone: phone,
+          codeEglise: codeEglise,
+        );
+
+      default:
+        return const _UnknownRolePage();
+    }
+  }
+}
+
+class _UnknownRolePage extends StatelessWidget {
+  const _UnknownRolePage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Rôle inconnu')),
+      body: const Center(
+        child: Text('Le rôle fourni est invalide.'),
+      ),
+    );
+  }
+}

@@ -1,0 +1,13 @@
+import 'package:flutter/material.dart';
+
+class PresencesPage extends StatelessWidget {
+  const PresencesPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      appBar: AppBar(title: Text('Présences')),
+      body: Center(child: Text('Page Présences (OK)')),
+    );
+  }
+}

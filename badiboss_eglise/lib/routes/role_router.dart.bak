@@ -1,0 +1,29 @@
+import 'package:flutter/material.dart';
+import '../screens/dashboard/dashboard_screen.dart';
+
+class RoleRouter extends StatelessWidget {
+  final String? token;
+  final String? phone;
+  final String? role;
+  final String? codeEglise;
+
+  const RoleRouter({
+    super.key,
+    this.token,
+    this.phone,
+    this.role,
+    this.codeEglise,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Pour l’instant: on renvoie un dashboard stable.
+    // On remettra le routage par rôle après que ça compile.
+    return DashboardScreen(
+      token: token,
+      phone: phone,
+      role: role,
+      codeEglise: codeEglise,
+    );
+  }
+}

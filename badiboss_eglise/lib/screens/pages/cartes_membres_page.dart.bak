@@ -1,0 +1,13 @@
+import 'package:flutter/material.dart';
+
+class CartesMembresPage extends StatelessWidget {
+  const CartesMembresPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      appBar: AppBar(title: Text('Cartes Membres')),
+      body: Center(child: Text('Page Cartes Membres (OK)')),
+    );
+  }
+}

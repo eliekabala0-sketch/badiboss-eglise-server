@@ -1,0 +1,170 @@
+﻿import 'dart:convert';
+import 'dart:math';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/member.dart';
+
+/// LocalMembersStore
+/// Cache local des membres (SharedPreferences)
+/// Objectif: s'adapter aux écrans existants SANS les modifier.
+///
+/// IMPORTANT (compatibilité verrouillée):
+/// - newId() : 0 argument
+/// - upsert(Member) : 1 argument
+/// - removeById(String) : 1 argument
+/// - loadByChurch(String) : 1 argument
+/// - neighborsOf(Member) : 1 argument
+class LocalMembersStore {
+  // Un seul stockage global (évite de casser ce qui existait avant).
+  // Les écrans filtrent par churchCode via loadByChurch().
+  static const String _kAllMembers = 'bb_local_members_v1';
+
+  // Random pour newId()
+  static final Random _rnd = Random.secure();
+
+  /// Génère un ID local unique.
+  /// Signature verrouillée: newId() sans argument.
+  static String newId() {
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    final r = _rnd.nextInt(1 << 30);
+    return 'm_${ts}_$r';
+  }
+
+  /// Charge la liste de tous les membres stockés localement.
+  static Future<List<Member>> _loadAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kAllMembers);
+    if (raw == null || raw.trim().isEmpty) return <Member>[];
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return <Member>[];
+
+      final out = <Member>[];
+      for (final e in decoded) {
+        if (e is Map) {
+          out.add(Member.fromJson(Map<String, dynamic>.from(e)));
+        }
+      }
+      return out;
+    } catch (_) {
+      // Si JSON cassé: on ne plante pas l'app, on repart propre.
+      return <Member>[];
+    }
+  }
+
+  /// Sauvegarde la liste complète.
+  static Future<void> _saveAll(List<Member> members) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // On convertit en JSON String (setString reçoit TOUJOURS une String)
+    final list = members.map((m) => m.toJson()).toList();
+    final jsonStr = jsonEncode(list);
+
+    await prefs.setString(_kAllMembers, jsonStr);
+  }
+
+  /// Retourne les membres d'une église (filtre sur churchCode).
+  /// Signature verrouillée: loadByChurch(String)
+  static Future<List<Member>> loadByChurch(String churchCode) async {
+    final all = await _loadAll();
+    final cc = _norm(churchCode);
+    if (cc.isEmpty) return all;
+
+    return all.where((m) => _norm(_churchOf(m)) == cc).toList();
+  }
+
+  /// Ajoute ou met à jour un membre.
+  /// Signature verrouillée: upsert(Member)  (1 seul argument)
+  static Future<Member> upsert(Member member) async {
+    final all = await _loadAll();
+
+    // Si pas d'id, on en crée un
+    final id = _safe(member.id);
+    final fixed = (id.isEmpty) ? _withId(member, newId()) : member;
+
+    final idx = all.indexWhere((m) => _safe(m.id) == _safe(fixed.id));
+    if (idx >= 0) {
+      all[idx] = fixed;
+    } else {
+      all.add(fixed);
+    }
+
+    await _saveAll(all);
+    return fixed;
+  }
+
+  /// Supprime un membre par ID.
+  /// Signature verrouillée: removeById(String) (1 seul argument)
+  static Future<void> removeById(String id) async {
+    final all = await _loadAll();
+    final target = _safe(id);
+    if (target.isEmpty) return;
+
+    all.removeWhere((m) => _safe(m.id) == target);
+    await _saveAll(all);
+  }
+
+  /// Renvoie les voisins (même churchCode + même neighborhood).
+  /// Signature verrouillée: neighborsOf(Member)
+  static Future<List<Member>> neighborsOf(Member me) async {
+    final all = await _loadAll();
+
+    final myChurch = _norm(_churchOf(me));
+    final myHood = _norm(_hoodOf(me));
+    final myId = _safe(me.id);
+
+    if (myChurch.isEmpty || myHood.isEmpty) return <Member>[];
+
+    return all.where((m) {
+      if (_safe(m.id) == myId) return false;
+      return _norm(_churchOf(m)) == myChurch && _norm(_hoodOf(m)) == myHood;
+    }).toList();
+  }
+
+  // -------------------------
+  // Helpers (compat safe)
+  // -------------------------
+
+  static String _safe(String? s) => (s ?? '').trim();
+  static String _norm(String? s) => _safe(s).toLowerCase();
+
+  // On lit les champs sans casser si certains noms varient.
+  // (Mais d'après tes captures: m.neighborhood et m.id existent.)
+  static String _churchOf(Member m) {
+    // Le plus probable: churchCode
+    try {
+      // ignore: invalid_use_of_visible_for_testing_member
+      // (juste pour éviter de casser si lint)
+      return (m as dynamic).churchCode?.toString() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static String _hoodOf(Member m) {
+    try {
+      return (m as dynamic).neighborhood?.toString() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // Crée une copie avec id si ton modèle a copyWith, sinon fallback.
+  static Member _withId(Member m, String id) {
+    try {
+      final dyn = (m as dynamic);
+      if (dyn.copyWith != null) {
+        return dyn.copyWith(id: id) as Member;
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    // Fallback: reconstruire depuis json en remplaçant id
+    final map = Map<String, dynamic>.from(m.toJson());
+    map['id'] = id;
+    return Member.fromJson(map);
+  }
+}

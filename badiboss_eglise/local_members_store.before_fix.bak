@@ -1,0 +1,236 @@
+﻿import 'dart:convert';
+import 'dart:math';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+// IMPORTANT:
+// - SharedPreferences.setString() reçoit TOUJOURS une String => on jsonEncode systématiquement.
+// - Cette classe est un "cache local" des membres par église + index de voisinage pour le filtre rapide.
+
+class LocalMembersStore {
+  static const String _kMembersPrefix = 'members_'; // members_<churchCode>
+  static const String _kIndexPrefix = 'members_index_'; // members_index_<churchCode>
+  static const String _kCurrentChurchKey = 'current_church_code';
+
+  // ====== ID (correction de l'erreur originale newId() manquant) ======
+  static String newId() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rnd = Random().nextInt(1 << 20);
+    return 'm_${now}_$rnd';
+  }
+
+  // ====== Helpers ======
+  static String _safe(String? s) => (s ?? '').trim();
+  static String _norm(String? s) => _safe(s).toLowerCase();
+
+  static Future<String> _resolveChurchCode({String? explicit}) async {
+    final e = _safe(explicit);
+    if (e.isNotEmpty) return e;
+
+    final prefs = await SharedPreferences.getInstance();
+    final saved = _safe(prefs.getString(_kCurrentChurchKey));
+    return saved;
+  }
+
+  // Optionnel : si quelque part tu veux fixer l'église courante
+  static Future<void> setCurrentChurchCode(String churchCode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kCurrentChurchKey, _safe(churchCode));
+  }
+
+  // ====== Load / Save ======
+  static Future<List<dynamic>> _readRawList(SharedPreferences prefs, String churchCode) async {
+    final key = '$_kMembersPrefix$churchCode';
+    final raw = prefs.getString(key);
+    if (raw == null || raw.trim().isEmpty) return <dynamic>[];
+    final decoded = jsonDecode(raw);
+    if (decoded is List) return decoded;
+    return <dynamic>[];
+  }
+
+  static Future<void> _writeRawList(SharedPreferences prefs, String churchCode, List<dynamic> list) async {
+    final key = '$_kMembersPrefix$churchCode';
+    // setString => TOUJOURS String
+    await prefs.setString(key, jsonEncode(list));
+  }
+
+  // NOTE: Member vient de ton modèle existant.
+  // On utilise dynamic ici pour rester compatible sans casser ton code si Member évolue.
+  static Future<List<dynamic>> _loadMembersDynamic(String churchCode) async {
+    final prefs = await SharedPreferences.getInstance();
+    final rawList = await _readRawList(prefs, churchCode);
+
+    final out = <dynamic>[];
+    for (final e in rawList) {
+      if (e is Map) {
+        out.add(e);
+      }
+    }
+    return out;
+  }
+
+  static Future<void> _saveMembersDynamic(String churchCode, List<dynamic> membersAsMap) async {
+    final prefs = await SharedPreferences.getInstance();
+    await _writeRawList(prefs, churchCode, membersAsMap);
+    await rebuildIndex(churchCode);
+  }
+
+  // ====== API utilisée par tes écrans ======
+
+  // Charge les membres d'une église (List<Member>)
+  // On reconstruit via Member.fromJson si dispo, sinon on laisse tomber proprement.
+  static Future<List<dynamic>> loadByChurch(String churchCode) async {
+    final cc = await _resolveChurchCode(explicit: churchCode);
+    if (_safe(cc).isEmpty) return <dynamic>[];
+
+    final prefs = await SharedPreferences.getInstance();
+    final rawList = await _readRawList(prefs, cc);
+
+    final out = <dynamic>[];
+    for (final e in rawList) {
+      if (e is Map) out.add(e);
+    }
+    return out;
+  }
+
+  // Upsert: compatible avec tes appels `LocalMembersStore.upsert(m);`
+  static Future<void> upsert(dynamic member, {String? churchCode}) async {
+    final cc = await _resolveChurchCode(explicit: churchCode);
+
+    // On tente de déduire churchCode depuis le member si non fourni (sans casser la compilation)
+    String finalChurch = _safe(cc);
+    if (finalChurch.isEmpty) {
+      final dynamic d = member;
+      try {
+        finalChurch = _safe((d.churchCode ?? d.church_code ?? d.churchId ?? d.church_id)?.toString());
+      } catch (_) {}
+    }
+    if (finalChurch.isEmpty) return;
+
+    // member -> Map
+    Map<String, dynamic>? m;
+    try {
+      final dynamic d = member;
+      final json = d.toJson();
+      if (json is Map) m = Map<String, dynamic>.from(json);
+    } catch (_) {}
+    if (m == null) return;
+
+    final members = await _loadMembersDynamic(finalChurch);
+
+    final String id = _safe(m['id']?.toString());
+    if (id.isEmpty) return;
+
+    final idx = members.indexWhere((x) {
+      if (x is Map) return _safe(x['id']?.toString()) == id;
+      return false;
+    });
+
+    if (idx >= 0) {
+      members[idx] = m;
+    } else {
+      members.add(m);
+    }
+
+    await _saveMembersDynamic(finalChurch, members);
+  }
+
+  // Remove: compatible avec `LocalMembersStore.removeById(m.id);`
+  static Future<void> removeById(String id, {String? churchCode}) async {
+    final cc = await _resolveChurchCode(explicit: churchCode);
+    if (_safe(cc).isEmpty) return;
+
+    final members = await _loadMembersDynamic(cc);
+    members.removeWhere((x) {
+      if (x is Map) return _safe(x['id']?.toString()) == _safe(id);
+      return false;
+    });
+
+    await _saveMembersDynamic(cc, members);
+  }
+
+  // Voisins (quartier): compatible avec `neighborsOf(me);`
+  static Future<List<dynamic>> neighborsOf(dynamic me, {String? churchCode}) async {
+    String cc = _safe(churchCode);
+    if (cc.isEmpty) {
+      final dynamic d = me;
+      try {
+        cc = _safe((d.churchCode ?? d.church_code ?? d.churchId ?? d.church_id)?.toString());
+      } catch (_) {}
+    }
+    cc = await _resolveChurchCode(explicit: cc);
+    if (cc.isEmpty) return <dynamic>[];
+
+    // Récupérer quartier du membre
+    String neigh = '';
+    try {
+      final dynamic d = me;
+      neigh = _norm(d.neighborhood?.toString());
+      if (neigh.isEmpty) neigh = _norm(d.quartier?.toString());
+    } catch (_) {}
+    if (neigh.isEmpty) return <dynamic>[];
+
+    final ids = await loadNeighborhoodIndex(cc, neigh);
+    if (ids.isEmpty) return <dynamic>[];
+
+    final members = await _loadMembersDynamic(cc);
+    return members.where((x) {
+      if (x is Map) {
+        final id = _safe(x['id']?.toString());
+        return ids.contains(id);
+      }
+      return false;
+    }).toList();
+  }
+
+  // ====== Index ======
+
+  static Future<void> rebuildIndex(String churchCode) async {
+    final cc = await _resolveChurchCode(explicit: churchCode);
+    if (_safe(cc).isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final members = await _loadMembersDynamic(cc);
+
+    final index = <String, List<String>>{};
+    for (final x in members) {
+      if (x is! Map) continue;
+
+      final id = _safe(x['id']?.toString());
+      if (id.isEmpty) continue;
+
+      final n = _norm(x['neighborhood']?.toString());
+      if (n.isEmpty) continue;
+
+      index.putIfAbsent(n, () => <String>[]);
+      index[n]!.add(id);
+    }
+
+    final key = '$_kIndexPrefix$cc';
+    // setString => TOUJOURS String
+    await prefs.setString(key, jsonEncode(index));
+  }
+
+  static Future<List<String>> loadNeighborhoodIndex(String churchCode, String neighborhood) async {
+    final cc = await _resolveChurchCode(explicit: churchCode);
+    if (_safe(cc).isEmpty) return <String>[];
+
+    final prefs = await SharedPreferences.getInstance();
+    final key = '$_kIndexPrefix$cc';
+    final raw = prefs.getString(key);
+    if (raw == null || raw.trim().isEmpty) return <String>[];
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final map = Map<String, dynamic>.from(decoded);
+        final n = _norm(neighborhood);
+        final v = map[n];
+        if (v is List) {
+          return v.map((e) => _safe(e.toString())).where((e) => e.isNotEmpty).toList();
+        }
+      }
+    } catch (_) {}
+    return <String>[];
+  }
+}

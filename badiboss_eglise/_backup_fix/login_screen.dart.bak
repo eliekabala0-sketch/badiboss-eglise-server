@@ -1,0 +1,46 @@
+import 'package:flutter/material.dart';
+import '../routes/role_router.dart';
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController phoneController = TextEditingController();
+
+  void _login() {
+    const role = 'super_admin';
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const RoleRouter().routeByRole(role),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Connexion')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: phoneController,
+              decoration: const InputDecoration(labelText: 'Téléphone'),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _login,
+              child: const Text('Se connecter'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,134 @@
+import 'package:flutter/material.dart';
+
+/// RoleRouter
+/// - Corrige l'erreur: "The method 'home' isn't defined for the type 'RoleRouter'"
+/// - Fournit aussi "go" (au cas où certains écrans l'appellent)
+///
+/// IMPORTANT:
+/// Ici on renvoie un écran "fallback" (Scaffold) pour éviter de casser le projet
+/// avec des imports vers des pages qui peuvent encore être en erreur.
+/// Quand tout sera stable, on reconnectera vers les vrais dashboards.
+class RoleRouter extends StatelessWidget {
+  const RoleRouter({super.key});
+
+  // --- Compatibilité: si ton code appelle RoleRouter().home(...)
+  Widget home([
+    BuildContext? context,
+    String? role,
+    String? codeEglise,
+    String? token,
+    String? phone,
+  ]) {
+    return _fallbackHome(
+      role: role,
+      codeEglise: codeEglise,
+      token: token,
+      phone: phone,
+    );
+  }
+
+  // --- Compatibilité: si ton code appelle RoleRouter().go(...)
+  void go([
+    BuildContext? context,
+    String? role,
+    String? codeEglise,
+    String? token,
+    String? phone,
+  ]) {
+    if (context == null) return;
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => _fallbackHome(
+          role: role,
+          codeEglise: codeEglise,
+          token: token,
+          phone: phone,
+        ),
+      ),
+    );
+  }
+
+  // --- Version statique (si tu veux l'utiliser plus tard)
+  static Widget homeStatic({
+    String? role,
+    String? codeEglise,
+    String? token,
+    String? phone,
+  }) {
+    return _fallbackHome(
+      role: role,
+      codeEglise: codeEglise,
+      token: token,
+      phone: phone,
+    );
+  }
+
+  static void goStatic(
+    BuildContext context, {
+    String? role,
+    String? codeEglise,
+    String? token,
+    String? phone,
+  }) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => _fallbackHome(
+          role: role,
+          codeEglise: codeEglise,
+          token: token,
+          phone: phone,
+        ),
+      ),
+    );
+  }
+
+  static Widget _fallbackHome({
+    String? role,
+    String? codeEglise,
+    String? token,
+    String? phone,
+  }) {
+    final r = (role ?? 'membre').trim();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Badiboss Église'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Routeur (fallback)',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              Text('role: $r'),
+              const SizedBox(height: 6),
+              Text('codeEglise: ${codeEglise ?? "-"}'),
+              const SizedBox(height: 6),
+              Text('token: ${token == null ? "-" : "***"}'),
+              const SizedBox(height: 6),
+              Text('phone: ${phone ?? "-"}'),
+              const SizedBox(height: 18),
+              const Text(
+                "Note: cet écran est temporaire pour stabiliser le build.\n"
+                "Après, on branchera vers les vrais dashboards (super admin / pasteur / admin / membre).",
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Widget non utilisé directement dans ton flux actuel,
+    // mais on garde un build propre.
+    return _fallbackHome();
+  }
+}
