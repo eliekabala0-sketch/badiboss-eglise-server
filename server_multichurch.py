@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3
@@ -96,10 +96,19 @@ def do_login(data: LoginRequest):
 def login_root(data: LoginRequest):
     return do_login(data)
 
+# Préflight explicite pour les navigateurs stricts
+@app.options("/login")
+def login_root_options():
+    return Response(status_code=204)
+
 # Alias compatible avec l’ancienne route
 @app.post("/church/login")
 def login_church(data: LoginRequest):
     return do_login(data)
+
+@app.options("/church/login")
+def login_church_options():
+    return Response(status_code=204)
 
 @app.get("/test")
 def test():
