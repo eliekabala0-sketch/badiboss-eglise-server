@@ -2,11 +2,10 @@ FROM ghcr.io/cirruslabs/flutter:stable AS build
 
 WORKDIR /app
 
-COPY pubspec.yaml pubspec.lock ./
-RUN flutter pub get
-
 COPY . .
-RUN flutter config --enable-web && flutter build web --release
+
+RUN flutter pub get
+RUN flutter build web --release
 
 FROM nginx:alpine
 
