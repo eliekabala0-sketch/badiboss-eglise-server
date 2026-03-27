@@ -1,10 +1,10 @@
-FROM ghcr.io/cirruslabs/flutter:stable AS build
+FROM ghcr.io/cirruslabs/flutter:3.16.9 AS build
 
 WORKDIR /app
 
 COPY . .
 
-RUN flutter pub get
+RUN flutter pub get --enforce-lockfile
 RUN flutter build web --release --no-wasm-dry-run
 
 FROM nginx:alpine
