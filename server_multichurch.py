@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3
@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 # ================================
-# DATABASE (simple test SQLite)
+# DATABASE
 # ================================
 def get_db():
     conn = sqlite3.connect("database.db")
@@ -42,7 +42,6 @@ def init_db():
     )
     """)
 
-    # utilisateur test
     cursor.execute("""
     INSERT OR IGNORE INTO users (id, church_code, phone, password)
     VALUES (1, 'EGLISE001', '0990000000', '123456')
@@ -64,18 +63,16 @@ class LoginRequest(BaseModel):
 # ================================
 # ROUTES
 # ================================
-
 @app.get("/")
 def root():
     return {"message": "Badiboss Église API OK"}
 
-@app.post("/church/login")
-def login(data: LoginRequest):
+def do_login(data: LoginRequest):
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT * FROM users 
+    SELECT * FROM users
     WHERE church_code = ? AND phone = ? AND password = ?
     """, (data.church_code, data.phone, data.password))
 
@@ -94,16 +91,20 @@ def login(data: LoginRequest):
         }
     }
 
-# ================================
-# DEBUG ROUTE (important)
-# ================================
+# Alias pour le frontend actuel
+@app.post("/login")
+def login_root(data: LoginRequest):
+    return do_login(data)
+
+# Alias compatible avec l’ancienne route
+@app.post("/church/login")
+def login_church(data: LoginRequest):
+    return do_login(data)
+
 @app.get("/test")
 def test():
     return {"status": "ok"}
 
-# ================================
-# HEALTHCHECK RAILWAY
-# ================================
 @app.get("/health")
 def health():
     return {"status": "healthy"}
