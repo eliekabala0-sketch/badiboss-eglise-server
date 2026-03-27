@@ -3,8 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:mobile_scanner/mobile_scanner.dart';
-
 import '../../auth/models/session.dart';
 import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
@@ -18,6 +16,7 @@ import '../stores/presence_store.dart';
 import '../../core/config.dart';
 import '../../core/phone_rd_congo.dart';
 import '../../services/church_service.dart';
+import 'presence_camera_body.dart';
 
 final class PresenceMarkPage extends StatefulWidget {
   const PresenceMarkPage({super.key});
@@ -851,19 +850,13 @@ final class _CameraScanPage extends StatefulWidget {
 }
 
 final class _CameraScanPageState extends State<_CameraScanPage> {
-  bool _captured = false;
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Scanner caméra')),
-      body: MobileScanner(
-        onDetect: (capture) {
-          if (_captured) return;
-          final code = capture.barcodes.isNotEmpty ? capture.barcodes.first.rawValue : null;
-          if (code == null || code.trim().isEmpty) return;
-          _captured = true;
-          Navigator.of(context).pop(code.trim());
+      body: PresenceCameraBody(
+        onDetected: (code) {
+          Navigator.of(context).pop(code);
         },
       ),
     );
