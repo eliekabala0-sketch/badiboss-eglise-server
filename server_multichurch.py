@@ -11,11 +11,14 @@ import os
 
 app = FastAPI(title="Badiboss Multi-Church Server", version="2.0.0")
 
-# CORS (Flutter Web dev):
-# - allow localhost / 127.0.0.1 with any port
-# - CORSMiddleware also handles preflight OPTIONS properly
+# CORS (Flutter Web + Railway):
+# - allow production frontend origin explicitly
+# - keep localhost / 127.0.0.1 with any port for local web dev
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=[
+        "https://lovely-manifestation-production-e17b.up.railway.app",
+    ],
     allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
