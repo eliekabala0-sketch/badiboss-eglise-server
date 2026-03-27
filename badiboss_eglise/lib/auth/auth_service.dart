@@ -21,7 +21,7 @@ final class AuthService {
       final api = ApiClient();
 
       final loginRes = await api.post(
-        '/church/login',
+        '/login',
         headers: const {'Content-Type': 'application/json'},
         body: jsonEncode({
           'church_code': churchCode.trim(),
