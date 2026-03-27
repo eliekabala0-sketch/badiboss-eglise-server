@@ -19,10 +19,12 @@ app.add_middleware(
     allow_origins=[
         "https://lovely-manifestation-production-e17b.up.railway.app",
     ],
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origin_regex=r"https://.*\.up\.railway\.app|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
 
 DB_FILE = "badiboss_multichurch.db"
