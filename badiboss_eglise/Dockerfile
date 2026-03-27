@@ -4,8 +4,8 @@ WORKDIR /app
 
 COPY . .
 
-RUN flutter pub get --enforce-lockfile
-RUN flutter build web --release --no-wasm-dry-run
+RUN flutter pub get
+RUN flutter build web --release
 
 FROM nginx:alpine
 
