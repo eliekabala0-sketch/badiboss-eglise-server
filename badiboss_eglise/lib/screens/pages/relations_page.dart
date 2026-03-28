@@ -26,35 +26,63 @@ class _RelationsPageState extends State<RelationsPage> {
   }
 
   Future<void> _load() async {
-    _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-    final s = await const SessionStore().read();
-    final token = (s?.token ?? '').trim();
-    if (token.isEmpty) return;
-    final uri = Uri.parse('${Config.baseUrl}/church/relations/list');
-    final res = await http
-        .get(
-          uri,
-          headers: {
-            'accept': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-        )
-        .timeout(Duration(seconds: Config.timeoutSeconds));
-    final decoded = jsonDecode(res.body.isEmpty ? '{}' : res.body);
-    if (decoded is! Map || res.statusCode < 200 || res.statusCode >= 300) {
-      return;
+    try {
+      _members = await const MemberDirectoryService().loadMembersForActiveChurch();
+      if (!mounted) return;
+      final s = await const SessionStore().read();
+      final token = (s?.token ?? '').trim();
+      if (token.isEmpty) return;
+      final uri = Uri.parse('${Config.baseUrl}/church/relations/list');
+      final res = await http
+          .get(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      if (!mounted) return;
+
+      Map<String, dynamic>? decoded;
+      try {
+        final raw = res.body.isEmpty ? '{}' : res.body;
+        final d = jsonDecode(raw);
+        if (d is Map) decoded = Map<String, dynamic>.from(d);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Réponse serveur invalide (liste relations).')),
+          );
+        }
+        return;
+      }
+      if (decoded == null) return;
+
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        final detail = (decoded['detail'] ?? decoded['message'] ?? 'Erreur ${res.statusCode}').toString();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(detail)));
+        }
+        return;
+      }
+
+      final list = decoded['relations'];
+      if (list is! List) return;
+      if (!mounted) return;
+      setState(() {
+        _items
+          ..clear()
+          ..addAll(
+            list
+                .whereType<Map>()
+                .map((e) => _RelationItem.fromMap(Map<String, dynamic>.from(e))),
+          );
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
     }
-    final list = decoded['relations'];
-    if (list is! List) return;
-    setState(() {
-      _items
-        ..clear()
-        ..addAll(
-          list
-              .whereType<Map>()
-              .map((e) => _RelationItem.fromMap(Map<String, dynamic>.from(e))),
-        );
-    });
   }
 
   Future<void> _save() async {
@@ -77,8 +105,16 @@ class _RelationsPageState extends State<RelationsPage> {
           )
           .timeout(Duration(seconds: Config.timeoutSeconds));
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw StateError(res.body);
+        String msg = res.body;
+        try {
+          final d = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+          if (d is Map) {
+            msg = (d['detail'] ?? d['message'] ?? msg).toString();
+          }
+        } catch (_) {}
+        throw StateError(msg);
       }
+      if (mounted) await _load();
     } catch (e) {
       if (!mounted) return;
       final msg = e is StateError ? e.message : e.toString();
