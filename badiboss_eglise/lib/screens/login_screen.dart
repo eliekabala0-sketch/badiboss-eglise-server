@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
-import '../services/saas_store.dart';
+import '../services/church_api.dart';
 import 'member_self_register_screen.dart';
 
 // Session + Router multi-rôle
@@ -72,6 +72,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final codeCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
     final phoneCtrl = TextEditingController();
+    final pasteurNameCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -84,7 +86,15 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 8),
               TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nom église')),
               const SizedBox(height: 8),
-              TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Téléphone contact')),
+              TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Téléphone pasteur (connexion)')),
+              const SizedBox(height: 8),
+              TextField(controller: pasteurNameCtrl, decoration: const InputDecoration(labelText: 'Nom du pasteur')),
+              const SizedBox(height: 8),
+              TextField(
+                controller: passCtrl,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Mot de passe compte pasteur'),
+              ),
             ],
           ),
         ),
@@ -97,39 +107,41 @@ class _LoginScreenState extends State<LoginScreen> {
     if (ok != true) return;
     final code = codeCtrl.text.trim().toUpperCase();
     final name = nameCtrl.text.trim();
-    if (code.isEmpty || name.isEmpty) return;
-    final all = await SaaSStore.loadChurches();
-    if (all.any((e) => e.churchCode == code)) {
+    final phone = phoneCtrl.text.trim();
+    final pasteurName = pasteurNameCtrl.text.trim().isEmpty ? 'Pasteur' : pasteurNameCtrl.text.trim();
+    final pw = passCtrl.text.trim();
+    if (code.isEmpty || name.isEmpty || phone.isEmpty || pw.length < 4) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ce code église existe déjà.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Code, nom, téléphone et mot de passe (min 4) obligatoires.')),
+      );
       return;
     }
-    final global = await SaaSStore.loadGlobal();
-    final trial = (global['trialDaysDefault'] ?? 7) as int;
-    final grace = (global['graceDaysDefault'] ?? 2) as int;
-    final now = DateTime.now();
-    all.add(
-      SaaSChurchSubscription(
-        churchCode: code,
-        churchName: name,
-        status: 'trial',
-        planId: 'plan_basic',
-        planName: 'Basic',
-        trialDays: trial,
-        graceDays: grace,
-        reminderEnabled: (global['reminderEnabled'] ?? true) == true,
-        contractExempt: false,
-        paymentState: 'unpaid',
-        startedAtIso: now.toIso8601String(),
-        expiresAtIso: now.add(Duration(days: trial)).toIso8601String(),
-        graceEndsAtIso: now.add(Duration(days: trial + grace)).toIso8601String(),
-        source: 'self_service',
-      ),
-    );
-    await SaaSStore.saveChurches(all);
+    try {
+      final existing = await ChurchApi.getPublicJson('/public/churches/list');
+      final ch = existing['churches'];
+      if (ch is List && ch.any((e) => e is Map && (e['church_code'] ?? '').toString().toUpperCase() == code)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ce code église existe déjà.')));
+        return;
+      }
+    } catch (_) {}
+    try {
+      await ChurchApi.postPublicJson('/public/church/trial_create', {
+        'church_code': code,
+        'name': name,
+        'pasteur_phone': phone,
+        'pasteur_full_name': pasteurName,
+        'pasteur_password': pw,
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Échec création: $e')));
+      return;
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Église créée en essai: $code. En attente de validation super admin.')),
+      SnackBar(content: Text('Église créée sur le serveur: $code. Connectez-vous avec le téléphone pasteur.')),
     );
   }
 

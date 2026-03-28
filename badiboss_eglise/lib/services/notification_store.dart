@@ -1,11 +1,14 @@
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+
+import '../auth/stores/session_store.dart';
+import '../core/config.dart';
 
 final class AppNotification {
   final String id;
   final String churchCode;
-  final String target; // all|admins|members|group:<id>|phone:<phone>
+  final String target;
   final String title;
   final String body;
   final String sender;
@@ -49,21 +52,58 @@ final class AppNotification {
 }
 
 final class NotificationStore {
-  static const _k = 'app_notifications_v1';
+  static Future<String> _token() async {
+    final s = await const SessionStore().read();
+    final t = (s?.token ?? '').trim();
+    if (t.isEmpty) throw StateError('token manquant');
+    return t;
+  }
 
   static Future<List<AppNotification>> loadAll() async {
-    final p = await SharedPreferences.getInstance();
-    final raw = p.getString(_k);
-    if (raw == null || raw.trim().isEmpty) return <AppNotification>[];
-    return (jsonDecode(raw) as List)
-        .map((e) => AppNotification.fromMap(Map<String, dynamic>.from(e)))
-        .toList();
+    final s = await const SessionStore().read();
+    final cc = (s?.churchCode ?? '').trim();
+    if (cc.isEmpty) return <AppNotification>[];
+    try {
+      final t = await _token();
+      final uri = Uri.parse('${Config.baseUrl}/church/notifications/list');
+      final res = await http
+          .get(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $t',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final dec = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+      if (dec is! Map || res.statusCode < 200 || res.statusCode >= 300) {
+        return <AppNotification>[];
+      }
+      final list = dec['notifications'];
+      if (list is! List) return <AppNotification>[];
+      return list.whereType<Map>().map((e) {
+        final m = Map<String, dynamic>.from(e);
+        final ts = int.tryParse((m['created_at'] ?? '').toString()) ?? 0;
+        final iso = DateTime.fromMillisecondsSinceEpoch(ts * 1000).toIso8601String();
+        final reads = m['readByPhones'];
+        return AppNotification(
+          id: (m['id'] ?? '').toString(),
+          churchCode: cc,
+          target: (m['target'] ?? 'all').toString(),
+          title: (m['title'] ?? '').toString(),
+          body: (m['body'] ?? '').toString(),
+          sender: (m['sender_phone'] ?? '').toString(),
+          createdAtIso: iso,
+          readByPhones:
+              reads is List ? reads.map((x) => x.toString()).toList() : <String>[],
+        );
+      }).toList();
+    } catch (_) {
+      return <AppNotification>[];
+    }
   }
 
-  static Future<void> saveAll(List<AppNotification> list) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setString(_k, jsonEncode(list.map((e) => e.toMap()).toList()));
-  }
+  static Future<void> saveAll(List<AppNotification> list) async {}
 
   static Future<void> push({
     required String churchCode,
@@ -71,23 +111,7 @@ final class NotificationStore {
     required String title,
     required String body,
     required String sender,
-  }) async {
-    final all = await loadAll();
-    all.insert(
-      0,
-      AppNotification(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        churchCode: churchCode,
-        target: target,
-        title: title,
-        body: body,
-        sender: sender,
-        createdAtIso: DateTime.now().toIso8601String(),
-        readByPhones: <String>[],
-      ),
-    );
-    await saveAll(all);
-  }
+  }) async {}
 
   static bool isTargetFor({
     required AppNotification n,
@@ -99,7 +123,9 @@ final class NotificationStore {
     if (n.churchCode != churchCode) return false;
     if (n.target == 'all') return true;
     if (n.target == 'members') return role == 'member' || role == 'membre';
-    if (n.target == 'admins') return role == 'admin' || role == 'pasteur' || role == 'super_admin';
+    if (n.target == 'admins') {
+      return role == 'admin' || role == 'pasteur' || role == 'super_admin';
+    }
     if (n.target.startsWith('phone:')) return n.target.substring(6) == phone;
     if (n.target.startsWith('group:')) return groupIds.contains(n.target.substring(6));
     return false;
@@ -130,12 +156,20 @@ final class NotificationStore {
     required String notificationId,
     required String phone,
   }) async {
-    final all = await loadAll();
-    final idx = all.indexWhere((n) => n.id == notificationId);
-    if (idx < 0) return;
-    if (!all[idx].readByPhones.contains(phone)) {
-      all[idx].readByPhones.add(phone);
-      await saveAll(all);
-    }
+    try {
+      final t = await _token();
+      final uri = Uri.parse('${Config.baseUrl}/church/notifications/mark_read');
+      await http
+          .post(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $t',
+            },
+            body: jsonEncode({'notification_id': notificationId}),
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+    } catch (_) {}
   }
 }

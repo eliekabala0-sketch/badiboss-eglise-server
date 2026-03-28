@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../auth/models/user_role.dart';
+import '../../auth/stores/session_store.dart';
+import '../../services/church_api.dart';
 import '../../services/saas_store.dart';
 
 final class SubscriptionPage extends StatefulWidget {
@@ -15,6 +17,7 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
   List<SaaSPlan> _plans = <SaaSPlan>[];
   SaaSChurchSubscription? _church;
   String _status = '';
+  bool _loading = true;
 
   @override
   void initState() {
@@ -23,40 +26,86 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final cc = (prefs.getString('auth_church_code') ?? prefs.getString('current_church_code') ?? '').trim();
-    _plans = await SaaSStore.loadPlans();
-    final churches = await SaaSStore.loadChurches();
-    SaaSChurchSubscription? sub;
-    for (final c in churches) {
-      if (c.churchCode == cc) {
-        sub = c;
-        break;
-      }
+    setState(() {
+      _loading = true;
+      _status = '';
+    });
+    final s = await const SessionStore().read();
+    final cc = (s?.churchCode ?? '').trim();
+    if (s == null || s.token.trim().isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _church = null;
+        _status = 'Session requise.';
+      });
+      return;
     }
-    if (sub == null && cc.isNotEmpty) {
-      final now = DateTime.now();
-      sub = SaaSChurchSubscription(
-        churchCode: cc,
-        churchName: cc,
-        status: 'trial',
-        planId: _plans.first.id,
-        planName: _plans.first.name,
-        trialDays: 7,
-        graceDays: 2,
-        reminderEnabled: true,
-        contractExempt: false,
-        paymentState: 'unpaid',
-        startedAtIso: now.toIso8601String(),
-        expiresAtIso: now.add(const Duration(days: 7)).toIso8601String(),
-        graceEndsAtIso: now.add(const Duration(days: 9)).toIso8601String(),
-        source: 'self_service',
-      );
-      churches.add(sub);
-      await SaaSStore.saveChurches(churches);
+    if (cc.isEmpty && s.role != UserRole.superAdmin) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _church = null;
+        _status = 'Code église manquant pour cet utilisateur.';
+      });
+      return;
+    }
+    try {
+      final dec = await ChurchApi.getJson('/church/billing/subscription');
+      final pl = dec['plans'];
+      if (pl is List && pl.isNotEmpty) {
+        _plans = pl
+            .whereType<Map>()
+            .map((e) => SaaSPlan.fromMap(Map<String, dynamic>.from(e)))
+            .toList();
+      } else {
+        _plans = await SaaSStore.loadPlans();
+      }
+      if (cc.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _church = null;
+          _status = 'Super admin: sélectionnez une église pour voir l’abonnement.';
+        });
+        return;
+      }
+      final raw = dec['subscription'];
+      if (raw is Map && raw.isNotEmpty) {
+        _church = SaaSChurchSubscription.fromMap(Map<String, dynamic>.from(raw));
+      } else {
+        final now = DateTime.now();
+        final plan = _plans.isNotEmpty ? _plans.first : (await SaaSStore.loadPlans()).first;
+        _church = SaaSChurchSubscription(
+          churchCode: cc,
+          churchName: cc,
+          status: 'trial',
+          planId: plan.id,
+          planName: plan.name,
+          trialDays: 7,
+          graceDays: 2,
+          reminderEnabled: true,
+          contractExempt: false,
+          paymentState: 'unpaid',
+          startedAtIso: now.toIso8601String(),
+          expiresAtIso: now.add(const Duration(days: 7)).toIso8601String(),
+          graceEndsAtIso: now.add(const Duration(days: 9)).toIso8601String(),
+          source: 'self_service',
+        );
+        await ChurchApi.postJson('/church/billing/subscription', {
+          'subscription': _church!.toMap(),
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _status = 'Erreur chargement: $e';
+      });
+      return;
     }
     if (!mounted) return;
-    setState(() => _church = sub);
+    setState(() => _loading = false);
   }
 
   Future<void> _choosePlan(SaaSPlan plan) async {
@@ -105,14 +154,11 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
   Future<void> _persistChurch() async {
     final c = _church;
     if (c == null) return;
-    final all = await SaaSStore.loadChurches();
-    final idx = all.indexWhere((x) => x.churchCode == c.churchCode);
-    if (idx >= 0) {
-      all[idx] = c;
-    } else {
-      all.add(c);
+    try {
+      await ChurchApi.postJson('/church/billing/subscription', {'subscription': c.toMap()});
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Erreur enregistrement: $e');
     }
-    await SaaSStore.saveChurches(all);
   }
 
   int _daysLeft(String iso) {
@@ -123,6 +169,11 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
     final c = _church;
     String reminder = '';
     if (c != null) {
@@ -136,7 +187,7 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Abonnement & Paiement')),
       body: c == null
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: Text(_status.isEmpty ? 'Chargement…' : _status))
           : ListView(
               padding: const EdgeInsets.all(12),
               children: [
@@ -146,8 +197,9 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
                     subtitle: Text(
                       'Plan: ${c.planName}\n'
                       'État: ${c.status} • Paiement: ${c.paymentState}\n'
-                      'Début: ${c.startedAtIso.substring(0, 10)} • Expire: ${c.expiresAtIso.substring(0, 10)}\n'
-                      'Grâce: ${c.graceDays}j • Fin grâce: ${c.graceEndsAtIso.substring(0, 10)}\n'
+                      'Début: ${c.startedAtIso.length >= 10 ? c.startedAtIso.substring(0, 10) : c.startedAtIso} • '
+                      'Expire: ${c.expiresAtIso.length >= 10 ? c.expiresAtIso.substring(0, 10) : c.expiresAtIso}\n'
+                      'Grâce: ${c.graceDays}j • Fin grâce: ${c.graceEndsAtIso.length >= 10 ? c.graceEndsAtIso.substring(0, 10) : c.graceEndsAtIso}\n'
                       'Jours restants: ${_daysLeft(c.expiresAtIso)}',
                     ),
                     isThreeLine: true,

@@ -1,33 +1,40 @@
-﻿import 'package:shared_preferences/shared_preferences.dart';
-
 import '../models/role_policy.dart';
+import '../../services/church_api.dart';
 
 final class RolePolicyStore {
-  static String _safe(String? s) => (s ?? '').trim();
-  static String _key(String churchCode) => 'role_policy_${churchCode.trim()}';
+  static String _key = '';
+  static RolePolicy? _mem;
+
+  static String _keyFor(String churchCode) => churchCode.trim();
 
   static Future<RolePolicy> read(String churchCode) async {
-    final cc = _safe(churchCode);
-    if (cc.isEmpty) return RolePolicy.empty();
-
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_key(cc));
-    if (raw == null || raw.trim().isEmpty) return RolePolicy.empty();
-
+    final k = _keyFor(churchCode);
+    if (_mem != null && _key == k) return _mem!;
     try {
-      return RolePolicy.fromJsonString(raw);
+      final dec = await ChurchApi.getJson('/church/role_policy');
+      final pol = dec['policy'];
+      if (pol is! Map || pol.isEmpty) {
+        _mem = RolePolicy.empty();
+      } else {
+        _mem = RolePolicy.fromMap(Map<String, dynamic>.from(pol));
+      }
+      _key = k;
+      return _mem!;
     } catch (_) {
-      // VERROUILLÉ: policy corrompue => purge propre (pas de crash)
-      await prefs.remove(_key(cc));
-      return RolePolicy.empty();
+      _mem = RolePolicy.empty();
+      _key = k;
+      return _mem!;
     }
   }
 
   static Future<void> write(String churchCode, RolePolicy policy) async {
-    final cc = _safe(churchCode);
-    if (cc.isEmpty) return;
+    await ChurchApi.postJson('/church/role_policy', {'payload': policy.toMap()});
+    _mem = policy;
+    _key = _keyFor(churchCode);
+  }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key(cc), policy.toJsonString());
+  static void invalidate() {
+    _mem = null;
+    _key = '';
   }
 }

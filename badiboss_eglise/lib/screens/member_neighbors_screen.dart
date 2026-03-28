@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
+import '../auth/stores/session_store.dart';
+import '../core/active_church_scope.dart';
+import '../core/phone_rd_congo.dart';
 import '../models/member.dart';
-import '../services/local_members_store.dart';
+import '../services/member_directory_service.dart';
+import '../services/member_neighbors_helper.dart';
 
 class MemberNeighborsScreen extends StatefulWidget {
   const MemberNeighborsScreen({super.key});
@@ -30,9 +32,9 @@ class _MemberNeighborsScreenState extends State<MemberNeighborsScreen> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final myPhone = (prefs.getString('auth_phone') ?? '').trim();
-      final churchCode = (prefs.getString('auth_church_code') ?? '').trim();
+      final s = await const SessionStore().read();
+      final myPhone = (s?.phone ?? '').trim();
+      final churchCode = await resolveActiveChurchCode();
 
       if (myPhone.isEmpty || churchCode.isEmpty) {
         setState(() {
@@ -42,32 +44,37 @@ class _MemberNeighborsScreenState extends State<MemberNeighborsScreen> {
         return;
       }
 
-      final all = await LocalMembersStore.loadByChurch(churchCode);
-      final me = all.where((m) => m.phone == myPhone).isNotEmpty
-          ? all.firstWhere((m) => m.phone == myPhone)
-          : null;
+      final all = await const MemberDirectoryService().loadMembersForActiveChurch();
+      Member? me;
+      for (final m in all) {
+        if (phonesMatchRdCongo(m.phone, myPhone)) {
+          me = m;
+          break;
+        }
+      }
 
-      if (me == null) {
+      final self = me;
+      if (self == null) {
         setState(() {
           _loading = false;
-          _error = "Ton profil membre n'est pas trouvé localement.";
+          _error = "Profil membre introuvable dans l'annuaire serveur.";
         });
         return;
       }
 
       // ✅ règle verrouillée: voisins seulement si membre validé
-      if (me.status != MemberStatus.active) {
+      if (self.status != MemberStatus.active) {
         setState(() {
           _loading = false;
-          _error = "Accès refusé: ton compte n'est pas encore validé (statut: ${me.status.name}).";
+          _error = "Accès refusé: ton compte n'est pas encore validé (statut: ${self.status.name}).";
         });
         return;
       }
 
-      final neigh = await LocalMembersStore.neighborsOf(me);
+      final neigh = neighborsFor(self, all);
 
       setState(() {
-        _me = me;
+        _me = self;
         _neighbors = neigh;
         _loading = false;
       });

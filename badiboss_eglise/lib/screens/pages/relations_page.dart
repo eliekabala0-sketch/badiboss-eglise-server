@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import '../../models/member.dart';
-import '../../services/local_members_store.dart';
 import '../../services/member_directory_service.dart';
+import '../../auth/stores/session_store.dart';
+import '../../core/config.dart';
 
 class RelationsPage extends StatefulWidget {
   const RelationsPage({super.key});
@@ -13,7 +14,6 @@ class RelationsPage extends StatefulWidget {
 }
 
 class _RelationsPageState extends State<RelationsPage> {
-  static const _key = 'pastoral_relations_v1';
   final List<_RelationItem> _items = [];
   bool _showClosed = true;
   String _relationFilter = 'all';
@@ -26,29 +26,64 @@ class _RelationsPageState extends State<RelationsPage> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final cc = (prefs.getString('auth_church_code') ?? '').trim();
-    if (cc.isNotEmpty) {
-      _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-      if (_members.isEmpty) {
-        _members = await LocalMembersStore.loadByChurch(cc);
-      }
+    _members = await const MemberDirectoryService().loadMembersForActiveChurch();
+    final s = await const SessionStore().read();
+    final token = (s?.token ?? '').trim();
+    if (token.isEmpty) return;
+    final uri = Uri.parse('${Config.baseUrl}/church/relations/list');
+    final res = await http
+        .get(
+          uri,
+          headers: {
+            'accept': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        )
+        .timeout(Duration(seconds: Config.timeoutSeconds));
+    final decoded = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+    if (decoded is! Map || res.statusCode < 200 || res.statusCode >= 300) {
+      return;
     }
-    final sp = prefs;
-    final raw = sp.getString(_key);
-    if (raw == null || raw.trim().isEmpty) return;
-    final list = (jsonDecode(raw) as List).cast<Map>();
+    final list = decoded['relations'];
+    if (list is! List) return;
     setState(() {
       _items
         ..clear()
-        ..addAll(list.map((e) => _RelationItem.fromMap(Map<String, dynamic>.from(e))));
+        ..addAll(
+          list
+              .whereType<Map>()
+              .map((e) => _RelationItem.fromMap(Map<String, dynamic>.from(e))),
+        );
     });
   }
 
   Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    final raw = jsonEncode(_items.map((e) => e.toMap()).toList());
-    await sp.setString(_key, raw);
+    try {
+      final s = await const SessionStore().read();
+      final token = (s?.token ?? '').trim();
+      if (token.isEmpty) throw StateError('token manquant');
+      final uri = Uri.parse('${Config.baseUrl}/church/relations/sync');
+      final res = await http
+          .post(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'relations': _items.map((e) => e.toMap()).toList(),
+            }),
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw StateError(res.body);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
   }
 
   Future<void> _addOrEdit({_RelationItem? existing}) async {

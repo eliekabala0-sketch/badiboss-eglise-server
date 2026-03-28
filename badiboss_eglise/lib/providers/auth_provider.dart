@@ -1,5 +1,4 @@
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth/auth_service.dart';
 import '../auth/models/session.dart';
@@ -17,7 +16,7 @@ final class AuthProvider extends ChangeNotifier {
 
   final AuthService _auth = const AuthService();
 
-  /// 🔒 A3: Restore session + compat SharedPreferences legacy
+  /// Restaure la session persistée (`SessionStore` uniquement).
   Future<void> init() async {
     _isLoading = true;
     _errorMessage = null;
@@ -26,12 +25,6 @@ final class AuthProvider extends ChangeNotifier {
     try {
       final s = await const SessionStore().read();
       _session = s;
-
-      // ✅ Compat : certains écrans lisent encore auth_* (TabMembers etc.)
-      // On écrit uniquement si une session existe.
-      if (s != null) {
-        await _writeLegacyPrefsFromSession(s);
-      }
     } catch (e) {
       // Pas de crash: on force session null
       _session = null;
@@ -60,9 +53,6 @@ final class AuthProvider extends ChangeNotifier {
 
       if (res is AuthSuccess) {
         _session = res.session;
-
-        // ✅ Compat legacy (NE PAS CASSER l’existant)
-        await _writeLegacyPrefsFromSession(res.session);
 
         _isLoading = false;
         _errorMessage = null;
@@ -99,7 +89,6 @@ final class AuthProvider extends ChangeNotifier {
 
     try {
       await _auth.logout();
-      await _clearLegacyPrefs();
 
       _session = null;
     } finally {
@@ -108,30 +97,4 @@ final class AuthProvider extends ChangeNotifier {
     }
   }
 
-  /// -------------------------
-  /// 🔒 Legacy compat helpers
-  /// -------------------------
-
-  Future<void> _writeLegacyPrefsFromSession(AppSession s) async {
-    final prefs = await SharedPreferences.getInstance();
-
-    // 🔒 Clés legacy utilisées ailleurs
-    await prefs.setString('auth_phone', s.phone);
-    await prefs.setString('auth_role', s.roleName); // ex: admin/pasteur/membre/protocole/...
-    await prefs.setString('auth_church_code', (s.churchCode ?? '').trim());
-
-    // 🔒 Compat LocalMembersStore (il utilise current_church_code)
-    // Même si super_admin => churchCode vide, on écrit la valeur brute.
-    await prefs.setString('current_church_code', (s.churchCode ?? '').trim());
-  }
-
-  Future<void> _clearLegacyPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('auth_phone');
-    await prefs.remove('auth_role');
-    await prefs.remove('auth_church_code');
-
-    // compat LocalMembersStore
-    await prefs.remove('current_church_code');
-  }
 }

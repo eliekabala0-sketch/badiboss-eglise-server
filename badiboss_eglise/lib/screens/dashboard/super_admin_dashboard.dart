@@ -1,13 +1,9 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/logout_helper.dart';
+import '../../services/church_api.dart';
 import '../../services/church_service.dart';
 import '../../services/saas_store.dart';
-import '../../auth/models/auth_account.dart';
-import '../../auth/stores/auth_accounts_store.dart';
 import '../app_shell.dart';
 
 class SuperAdminDashboard extends StatefulWidget {
@@ -42,94 +38,122 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final active = (prefs.getString('current_church_code') ?? '').trim();
-    _plans = await SaaSStore.loadPlans();
-    final global = await SaaSStore.loadGlobal();
-    final saasChurches = await SaaSStore.loadChurches();
+    final active = ChurchService.getChurchCode().trim();
+    try {
+      final decCh = await ChurchApi.getJson('/super/churches/list');
+      final decSaas = await ChurchApi.getJson('/super/saas/state');
+      final global = Map<String, dynamic>.from((decSaas['saas_global'] as Map?) ?? {});
+      final td = (global['trialDaysDefault'] is int)
+          ? global['trialDaysDefault'] as int
+          : int.tryParse('${global['trialDaysDefault'] ?? 7}') ?? 7;
+      final gd = (global['graceDaysDefault'] is int)
+          ? global['graceDaysDefault'] as int
+          : int.tryParse('${global['graceDaysDefault'] ?? 2}') ?? 2;
 
-    final loadedChurches = saasChurches.isEmpty ? _seedChurches() : saasChurches.map(_ChurchItem.fromSaaS).toList();
+      final pl = (decSaas['plans'] as List?) ?? [];
+      var plans = pl
+          .whereType<Map>()
+          .map((e) => SaaSPlan.fromMap(Map<String, dynamic>.from(e)))
+          .toList();
+      if (plans.isEmpty) {
+        plans = <SaaSPlan>[
+          SaaSPlan(
+            id: 'plan_basic',
+            name: 'Basic',
+            durationDays: 30,
+            priceUsd: 19,
+            allowFinance: true,
+            allowReports: true,
+            allowPresence: true,
+            allowMembers: true,
+          ),
+        ];
+      }
 
-    var allowSelf = true;
-    var requireValidation = true;
-    var guestScan = true;
-    allowSelf = (global['allowSelfRegistration'] ?? true) == true;
-    requireValidation = (global['requireValidation'] ?? true) == true;
-    guestScan = (global['enableGuestScan'] ?? true) == true;
-    _trialDaysDefault = (global['trialDaysDefault'] ?? 7) as int;
-    _graceDaysDefault = (global['graceDaysDefault'] ?? 2) as int;
-    _remindersEnabled = (global['reminderEnabled'] ?? true) == true;
-    final mods = (global['trialModules'] as List?)?.map((e) => e.toString()).toSet();
-    if (mods != null && mods.isNotEmpty) {
-      _trialModules
-        ..clear()
-        ..addAll(mods);
+      final subs = (decSaas['church_subscriptions'] as List?) ?? [];
+      final subsBy = <String, Map<String, dynamic>>{};
+      for (final e in subs) {
+        if (e is! Map) continue;
+        final m = Map<String, dynamic>.from(e);
+        subsBy[(m['churchCode'] ?? '').toString().toUpperCase()] = m;
+      }
+
+      final rows = (decCh['churches'] as List?) ?? [];
+      final nextChurches = <_ChurchItem>[];
+      final now = DateTime.now();
+      for (final r in rows) {
+        if (r is! Map) continue;
+        final m = Map<String, dynamic>.from(r);
+        final code = (m['church_code'] ?? '').toString();
+        final name = (m['name'] ?? code).toString();
+        final sus = m['is_suspended'] == 1 || m['is_suspended'] == true;
+        final sub = subsBy[code.toUpperCase()];
+        if (sub != null) {
+          nextChurches.add(_ChurchItem.fromSaaS(SaaSChurchSubscription.fromMap(sub)));
+        } else {
+          final tdays = td > 0 ? td : 7;
+          nextChurches.add(
+            _ChurchItem(
+              code: code,
+              name: name,
+              status: sus ? 'suspended' : 'trial',
+              subscriptionPlan: plans.first.name,
+              paymentStatus: 'impayé',
+              startedAtIso: now.toIso8601String(),
+              expiresAtIso: now.add(Duration(days: tdays)).toIso8601String(),
+              graceEndsAtIso: now.add(Duration(days: tdays + gd)).toIso8601String(),
+              trialDays: tdays,
+              graceDays: gd,
+              source: 'server',
+              contractExempt: false,
+              reminderEnabled: (global['reminderEnabled'] ?? true) == true,
+              planId: plans.first.id,
+            ),
+          );
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _plans = plans;
+        _churches
+          ..clear()
+          ..addAll(nextChurches);
+        _activeChurch = active;
+        _allowSelfRegistration = (global['allowSelfRegistration'] ?? true) == true;
+        _requireValidation = (global['requireValidation'] ?? true) == true;
+        _enableGuestScan = (global['enableGuestScan'] ?? true) == true;
+        _trialDaysDefault = td;
+        _graceDaysDefault = gd;
+        _remindersEnabled = (global['reminderEnabled'] ?? true) == true;
+        final mods = (global['trialModules'] as List?)?.map((e) => e.toString()).toSet();
+        _trialModules
+          ..clear()
+          ..addAll(mods ?? <String>{'members', 'presence', 'reports'});
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'Erreur chargement super: $e');
     }
-
-    if (!mounted) return;
-    setState(() {
-      _churches
-        ..clear()
-        ..addAll(loadedChurches);
-      _activeChurch = active;
-      _allowSelfRegistration = allowSelf;
-      _requireValidation = requireValidation;
-      _enableGuestScan = guestScan;
-    });
-    await _save();
   }
 
-  List<_ChurchItem> _seedChurches() => <_ChurchItem>[
-        _ChurchItem(
-          code: 'EGLISE001',
-          name: 'Église Centrale',
-          status: 'trial',
-          subscriptionPlan: 'Pro',
-          paymentStatus: 'impayé',
-          startedAtIso: DateTime.now().toIso8601String(),
-          expiresAtIso: DateTime.now().add(const Duration(days: 7)).toIso8601String(),
-          graceEndsAtIso: DateTime.now().add(const Duration(days: 9)).toIso8601String(),
-          trialDays: 7,
-          graceDays: 2,
-          source: 'self_service',
-          contractExempt: false,
-          reminderEnabled: true,
-        ),
-        _ChurchItem(
-          code: 'EGLISE002',
-          name: 'Église Victoire',
-          status: 'active',
-          subscriptionPlan: 'Premium',
-          paymentStatus: 'payé',
-          startedAtIso: DateTime.now().toIso8601String(),
-          expiresAtIso: DateTime.now().add(const Duration(days: 90)).toIso8601String(),
-          graceEndsAtIso: DateTime.now().add(const Duration(days: 92)).toIso8601String(),
-          trialDays: 0,
-          graceDays: 2,
-          source: 'super_admin',
-          contractExempt: false,
-          reminderEnabled: true,
-        ),
-      ];
-
   Future<void> _save() async {
-    await SaaSStore.savePlans(_plans);
-    await SaaSStore.saveChurches(_churches.map((e) => e.toSaaS()).toList());
-    await SaaSStore.saveGlobal({
-      'allowSelfRegistration': _allowSelfRegistration,
-      'requireValidation': _requireValidation,
-      'enableGuestScan': _enableGuestScan,
-      'trialDaysDefault': _trialDaysDefault,
-      'graceDaysDefault': _graceDaysDefault,
-      'reminderEnabled': _remindersEnabled,
-      'trialModules': _trialModules.toList(),
-    });
+    await SaaSStore.persistSuperSaasState(
+      plans: _plans,
+      churchSubscriptions: _churches.map((e) => e.toSaaS()).toList(),
+      saasGlobal: {
+        'allowSelfRegistration': _allowSelfRegistration,
+        'requireValidation': _requireValidation,
+        'enableGuestScan': _enableGuestScan,
+        'trialDaysDefault': _trialDaysDefault,
+        'graceDaysDefault': _graceDaysDefault,
+        'reminderEnabled': _remindersEnabled,
+        'trialModules': _trialModules.toList(),
+      },
+    );
   }
 
   Future<void> _enterChurch(_ChurchItem c) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('current_church_code', c.code);
-    await prefs.setString('auth_church_code', c.code);
     ChurchService.setChurchCode(c.code);
     if (!mounted) return;
     setState(() {
@@ -142,9 +166,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
   }
 
   Future<void> _exitChurchContext() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('current_church_code');
-    await prefs.remove('auth_church_code');
     ChurchService.clear();
     if (!mounted) return;
     setState(() {
@@ -209,55 +230,31 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     if (ok != true) return;
     final code = codeCtrl.text.trim().toUpperCase();
     final name = nameCtrl.text.trim();
-    if (code.isEmpty || name.isEmpty) return;
+    final phone = phoneCtrl.text.trim();
+    final pass = passCtrl.text.trim();
+    if (code.isEmpty || name.isEmpty || phone.isEmpty || pass.isEmpty) {
+      setState(() => _status = 'Code, nom, téléphone et mot de passe pasteur obligatoires.');
+      return;
+    }
     if (_churches.any((x) => x.code == code)) {
       setState(() => _status = 'Code église déjà existant.');
       return;
     }
-    setState(() {
-      final plan = _plans.firstWhere((p) => p.id == planId, orElse: () => _plans.first);
-      final now = DateTime.now();
-      final exp = now.add(Duration(days: _trialDaysDefault > 0 ? _trialDaysDefault : plan.durationDays));
-      final graceEnd = exp.add(Duration(days: _graceDaysDefault));
-      _churches.insert(
-        0,
-        _ChurchItem(
-          code: code,
-          name: name,
-          status: _trialDaysDefault > 0 ? 'trial' : 'pending',
-          subscriptionPlan: plan.name,
-          paymentStatus: payCtrl.text.trim().isEmpty ? 'impayé' : payCtrl.text.trim(),
-          startedAtIso: now.toIso8601String(),
-          expiresAtIso: exp.toIso8601String(),
-          graceEndsAtIso: graceEnd.toIso8601String(),
-          trialDays: _trialDaysDefault,
-          graceDays: _graceDaysDefault,
-          source: sourceCtrl.text.trim().isEmpty ? 'super_admin' : sourceCtrl.text.trim(),
-          contractExempt: false,
-          reminderEnabled: _remindersEnabled,
-          planId: plan.id,
-        ),
-      );
-      _status = 'Église ajoutée: $code';
-    });
-    final phone = phoneCtrl.text.trim();
-    final pass = passCtrl.text.trim();
-    if (phone.isNotEmpty && pass.isNotEmpty) {
-      await AuthAccountsStore.upsert(
-        AuthAccount(
-          churchCode: code,
-          phone: phone,
-          fullName: '$name admin',
-          roleName: 'admin',
-          status: 'active',
-          passwordPlain: pass,
-        ),
-      );
-      if (mounted) {
-        setState(() => _status = 'Église ajoutée: $code + identifiants admin enregistrés.');
-      }
+    try {
+      await ChurchApi.postJson('/super/church/create', {
+        'church_code': code,
+        'name': name,
+        'pasteur_phone': phone,
+        'pasteur_full_name': '$name responsable',
+        'pasteur_password': pass,
+      });
+    } catch (e) {
+      setState(() => _status = 'Erreur création serveur: $e');
+      return;
     }
-    await _save();
+    await _load();
+    if (!mounted) return;
+    setState(() => _status = 'Église créée sur le serveur: $code (compte pasteur).');
   }
 
   @override
@@ -676,18 +673,19 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     final ph = phoneCtrl.text.trim();
     final pw = passCtrl.text.trim();
     if (ph.isEmpty || pw.isEmpty) return;
-    await AuthAccountsStore.upsert(
-      AuthAccount(
-        churchCode: c.code,
-        phone: ph,
-        fullName: '${c.name} admin',
-        roleName: 'admin',
-        status: 'active',
-        passwordPlain: pw,
-      ),
-    );
+    try {
+      await ChurchApi.postJson('/super/users/password_reset', {
+        'church_code': c.code,
+        'phone': ph,
+        'new_password': pw,
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'Erreur réinitialisation: $e');
+      return;
+    }
     if (!mounted) return;
-    setState(() => _status = 'Identifiants réinitialisés pour ${c.code}.');
+    setState(() => _status = 'Mot de passe serveur mis à jour pour $ph (${c.code}).');
   }
 
   Widget _billingCard() {

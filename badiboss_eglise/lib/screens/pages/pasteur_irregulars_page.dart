@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/member.dart';
-import '../../services/local_members_store.dart';
+import '../../services/church_api.dart';
 import '../../services/member_directory_service.dart';
 
 class PasteurIrregularsPage extends StatefulWidget {
@@ -59,10 +57,7 @@ class _IrregularItem {
 }
 
 class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
-  static final Map<String, List<_IrregularItem>> _db = {};
-  String get _storageKey => 'irregulars_${widget.codeEglise}';
-  List<_IrregularItem> get _items =>
-      _db.putIfAbsent(widget.codeEglise, () => []);
+  final List<_IrregularItem> _items = <_IrregularItem>[];
   List<Member> _members = <Member>[];
 
   @override
@@ -73,25 +68,30 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
 
   Future<void> _load() async {
     _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-    if (_members.isEmpty) {
-      _members = await LocalMembersStore.loadByChurch(widget.codeEglise);
-    }
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getString(_storageKey);
-    if (raw == null || raw.trim().isEmpty) return;
-    final list = (jsonDecode(raw) as List).cast<Map>();
-    final data = list.map((e) => _IrregularItem.fromMap(Map<String, dynamic>.from(e))).toList();
-    if (!mounted) return;
-    setState(() {
-      _items
-        ..clear()
-        ..addAll(data);
-    });
+    try {
+      final dec = await ChurchApi.getJson('/church/documents/irregulars');
+      final pay = dec['payload'];
+      if (pay is Map) {
+        final raw = pay['items'];
+        if (raw is List && raw.isNotEmpty) {
+          final data =
+              raw.whereType<Map>().map((e) => _IrregularItem.fromMap(Map<String, dynamic>.from(e))).toList();
+          if (!mounted) return;
+          setState(() {
+            _items
+              ..clear()
+              ..addAll(data);
+          });
+          return;
+        }
+      }
+    } catch (_) {}
   }
 
-  Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_storageKey, jsonEncode(_items.map((e) => e.toMap()).toList()));
+  Future<void> _persist() async {
+    await ChurchApi.postJson('/church/documents/irregulars', {
+      'payload': {'items': _items.map((e) => e.toMap()).toList()},
+    });
   }
 
   void _addDialog() {
@@ -174,7 +174,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
                   ),
                 );
               });
-              _save();
+              _persist();
               Navigator.pop(context);
             },
             child: const Text("Valider"),
@@ -195,7 +195,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
         x.status = "irregulier";
       x.actions.add('Statut -> ${_label(x.status)}');
     });
-    _save();
+    _persist();
   }
 
   String _label(String s) {
@@ -222,7 +222,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
       if (picked == null) return;
       setState(() => x.shepherd = '${picked.id} • ${picked.fullName}');
       x.actions.add('Berger assigné -> ${x.shepherd}');
-      _save();
+      _persist();
     });
   }
 
@@ -244,7 +244,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
               final v = c.text.trim();
               if (v.isEmpty) return;
               setState(() => x.actions.add(v));
-              _save();
+              _persist();
               Navigator.pop(context);
             },
             child: const Text("Ajouter"),
@@ -269,7 +269,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
           FilledButton(
             onPressed: () {
               setState(() => x.nextFollowUp = c.text.trim());
-              _save();
+              _persist();
               Navigator.pop(context);
             },
             child: const Text("Enregistrer"),

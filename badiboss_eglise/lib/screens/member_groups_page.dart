@@ -1,12 +1,9 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/access_control.dart';
 import '../auth/permissions.dart';
 import '../auth/stores/session_store.dart';
 import '../models/member.dart';
-import '../services/local_members_store.dart';
+import '../services/church_api.dart';
 import '../services/member_directory_service.dart';
 import '../widgets/member_picker_dialog.dart';
 
@@ -19,8 +16,6 @@ final class MemberGroupsPage extends StatefulWidget {
 }
 
 final class _MemberGroupsPageState extends State<MemberGroupsPage> {
-  static const _kGroups = 'member_groups_v1';
-  static const _kReq = 'member_group_requests_v1';
   List<_Group> _groups = <_Group>[];
   List<_GroupRequest> _requests = <_GroupRequest>[];
   List<Member> _members = <Member>[];
@@ -39,43 +34,61 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
   }
 
   Future<void> _load() async {
-    final p = await SharedPreferences.getInstance();
     final s = await const SessionStore().read();
-    _phone = (p.getString('auth_phone') ?? '').trim();
-    _church = (p.getString('auth_church_code') ?? '').trim();
+    _phone = (s?.phone ?? '').trim();
+    _church = (s?.churchCode ?? '').trim();
     if (s != null) {
-      _phone = s.phone;
-      _church = s.churchCode ?? _church;
       _roleName = s.roleName;
       _canManage = await AccessControl.has(s, Permissions.manageGroups);
       _canView = await AccessControl.has(s, Permissions.viewGroups);
     }
-    final gRaw = p.getString(_kGroups);
-    final rRaw = p.getString(_kReq);
-    _groups = gRaw == null
-        ? <_Group>[
-            _Group(id: 'jeunes', name: 'Jeunes', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
-            _Group(id: 'papas', name: 'Papas', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
-            _Group(id: 'mamans', name: 'Mamans', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
-            _Group(id: 'musiciens', name: 'Musiciens', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
-          ]
-        : (jsonDecode(gRaw) as List).map((e) => _Group.fromMap(Map<String, dynamic>.from(e))).toList();
-    _requests = rRaw == null
-        ? <_GroupRequest>[]
-        : (jsonDecode(rRaw) as List).map((e) => _GroupRequest.fromMap(Map<String, dynamic>.from(e))).toList();
-    _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-    if (_members.isEmpty && _church.isNotEmpty) {
-      _members = await LocalMembersStore.loadByChurch(_church);
+    _groups = <_Group>[];
+    _requests = <_GroupRequest>[];
+    var fromServer = false;
+    try {
+      final dec = await ChurchApi.getJson('/church/documents/member_groups');
+      final pay = dec['payload'];
+      if (pay is Map) {
+        final g = pay['groups'];
+        final r = pay['requests'];
+        if (g is List && g.isNotEmpty) {
+          fromServer = true;
+          _groups = g
+              .whereType<Map>()
+              .map((e) => _Group.fromMap(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+        if (r is List) {
+          _requests = r
+              .whereType<Map>()
+              .map((e) => _GroupRequest.fromMap(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+      }
+    } catch (_) {}
+    if (!fromServer) {
+      _groups = <_Group>[
+        _Group(id: 'jeunes', name: 'Jeunes', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
+        _Group(id: 'papas', name: 'Papas', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
+        _Group(id: 'mamans', name: 'Mamans', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
+        _Group(id: 'musiciens', name: 'Musiciens', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
+      ];
+      try {
+        await _persist();
+      } catch (_) {}
     }
+    _members = await const MemberDirectoryService().loadMembersForActiveChurch();
     if (!mounted) return;
     setState(() {});
-    await _save();
   }
 
-  Future<void> _save() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setString(_kGroups, jsonEncode(_groups.map((e) => e.toMap()).toList()));
-    await p.setString(_kReq, jsonEncode(_requests.map((e) => e.toMap()).toList()));
+  Future<void> _persist() async {
+    await ChurchApi.postJson('/church/documents/member_groups', {
+      'payload': {
+        'groups': _groups.map((e) => e.toMap()).toList(),
+        'requests': _requests.map((e) => e.toMap()).toList(),
+      },
+    });
   }
 
   @override
@@ -124,7 +137,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                                   status: 'pending',
                                 ),
                               );
-                              _save().then((_) => setState(() {}));
+                              _persist().then((_) => setState(() {}));
                             },
                             child: const Text('Demander'),
                           ),
@@ -163,7 +176,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                         onPressed: () {
                           if (!_canValidateForGroup(r.groupId)) return;
                           r.status = 'rejected';
-                          _save().then((_) => setState(() {}));
+                          _persist().then((_) => setState(() {}));
                         },
                         child: const Text('Rejeter'),
                       ),
@@ -171,7 +184,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                         onPressed: () {
                           if (!_canValidateForGroup(r.groupId)) return;
                           r.status = 'approved';
-                          _save().then((_) => setState(() {}));
+                          _persist().then((_) => setState(() {}));
                         },
                         child: const Text('Valider'),
                       ),
@@ -243,7 +256,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
       leaderName: selected!.fullName,
       leaderRoleLabel: selected!.role,
     );
-    await _save();
+    await _persist();
     if (mounted) setState(() {});
   }
 
@@ -298,16 +311,13 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
         memberIds: <String>[],
       ),
     );
-    await _save();
+    await _persist();
     if (mounted) setState(() {});
   }
 
   Future<void> _openGroupMembers(_Group g) async {
     if (_members.isEmpty) {
       _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-      if (_members.isEmpty && _church.isNotEmpty) {
-        _members = await LocalMembersStore.loadByChurch(_church);
-      }
     }
     final byCategory = <String, List<Member>>{};
     for (final m in _members) {
@@ -376,7 +386,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
       ),
     );
     if (ok != true) return;
-    await _save();
+    await _persist();
     if (mounted) setState(() {});
   }
 

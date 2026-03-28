@@ -11,8 +11,6 @@ import '../../core/config.dart';
 import '../../services/church_service.dart';
 import '../models/activity.dart';
 import '../models/presence_entry.dart';
-import '../stores/activities_store.dart';
-import '../stores/presence_store.dart';
 import '../../services/export_file_service.dart';
 
 final class PresenceExportPage extends StatefulWidget {
@@ -95,9 +93,17 @@ final class _PresenceExportPageState extends State<PresenceExportPage> {
     List<Activity> acts = <Activity>[];
     try {
       acts = await _fetchEventsFromApi(token: s.token, churchCode: cc);
-    } catch (_) {
-      acts = await const ActivitiesStore().load(cc);
-      _status = 'API indisponible : export local.';
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
+      if (!mounted) return;
+      setState(() {
+        _activities = <Activity>[];
+        _selected = null;
+        _csv = '';
+        _status = 'Erreur serveur: $msg';
+        _loading = false;
+      });
+      return;
     }
     if (!mounted) return;
 
@@ -168,8 +174,13 @@ final class _PresenceExportPageState extends State<PresenceExportPage> {
         eventId: eventId,
         memberNameByNumber: names,
       );
-    } catch (_) {
-      list = await const PresenceStore().load(churchCode: cc, activityId: a.id);
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
+      setState(() {
+        _loading = false;
+        _status = 'Erreur serveur: $msg';
+      });
+      return;
     }
 
     final guests = list.where((p) => p.memberId == 'GUEST').length;

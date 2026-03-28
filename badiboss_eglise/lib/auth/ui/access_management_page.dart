@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../../core/phone_rd_congo.dart';
+import '../../services/church_api.dart';
 import '../auth_validators.dart';
-import '../models/auth_account.dart';
-import '../stores/auth_accounts_store.dart';
-import '../models/user_role.dart';
 import '../models/session.dart';
+import '../models/user_role.dart';
 import '../stores/session_store.dart';
-import '../../services/local_members_store.dart';
 import '../../services/member_directory_service.dart';
 import '../../models/member.dart';
 
@@ -41,9 +40,6 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
     final s = await store.read();
     if (s?.churchCode != null && s!.churchCode!.trim().isNotEmpty) {
       _members = await const MemberDirectoryService().loadMembersForActiveChurch();
-      if (_members.isEmpty) {
-        _members = await LocalMembersStore.loadByChurch(s.churchCode!);
-      }
     }
     setState(() => _session = s);
   }
@@ -70,6 +66,20 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
     return null;
   }
 
+  Future<Map<String, dynamic>?> _userRowByPhone(String phoneInput) async {
+    final want = normalizePhoneRdCongo(phoneInput);
+    final dec = await ChurchApi.getJson('/church/users/list');
+    final users = dec['users'];
+    if (users is! List) return null;
+    for (final e in users) {
+      if (e is! Map) continue;
+      final m = Map<String, dynamic>.from(e);
+      final p = (m['phone'] ?? '').toString();
+      if (normalizePhoneRdCongo(p) == want) return m;
+    }
+    return null;
+  }
+
   Future<void> _createOrUpdate() async {
     if (!_isAuthorizedAdmin) {
       setState(() => _status = 'Accès refusé: rôle non autorisé.');
@@ -84,26 +94,36 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
 
     if (!_formKey.currentState!.validate()) return;
 
-    final cc = s.churchCode!; // 🔒 VERROUILLÉ : source unique
     final ph = AuthValidators.normalizePhone(_phoneCtrl.text);
     final pw = _passwordCtrl.text.trim();
 
-    final acc = AuthAccount(
-      id: '${cc}_$ph',
-      churchCode: cc,
-      phone: ph,
-      fullName: '',
-      roleName: 'membre',
-      status: 'active',
-      passwordPlain: pw,
-      isActive: _isActive,
-      isBanned: _isBanned,
-      createdAt: DateTime.now(),
-    );
+    try {
+      final existing = await _userRowByPhone(ph);
+      if (existing != null) {
+        final id = int.tryParse((existing['id'] ?? '').toString());
+        if (id == null) throw StateError('id utilisateur invalide');
+        await ChurchApi.postJson('/church/users/password_reset', {
+          'user_id': id,
+          'new_password': pw,
+        });
+        await ChurchApi.postJson('/church/users/disable', {
+          'user_id': id,
+          'disabled': _isBanned || !_isActive,
+        });
+        setState(() => _status = 'Compte mis à jour: $ph');
+        return;
+      }
 
-    await AuthAccountsStore.upsert(acc);
-
-    setState(() => _status = 'Accès enregistré: $ph / $cc');
+      await ChurchApi.postJson('/church/users/create', {
+        'phone': ph,
+        'full_name': '',
+        'password': pw,
+        'role': 'MEMBRE',
+      });
+      setState(() => _status = 'Accès créé: $ph');
+    } catch (e) {
+      setState(() => _status = 'Erreur: $e');
+    }
   }
 
   Future<void> _loadAccess() async {
@@ -118,7 +138,6 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
       return;
     }
 
-    final cc = s.churchCode!;
     final ph = _phoneCtrl.text.trim();
 
     if (!AuthValidators.isValidPhone(ph)) {
@@ -126,22 +145,25 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
       return;
     }
 
-    final acc = await AuthAccountsStore.findByPhone(
-      churchCode: cc,
-      phone: ph,
-    );
-
-    if (acc == null) {
-      setState(() => _status = 'Aucun accès trouvé.');
-      return;
+    try {
+      final row = await _userRowByPhone(ph);
+      if (row == null) {
+        setState(() {
+          _passwordCtrl.clear();
+          _status = 'Aucun accès trouvé.';
+        });
+        return;
+      }
+      final disabled = (row['is_disabled'] == 1 || row['is_disabled'] == true);
+      setState(() {
+        _passwordCtrl.clear();
+        _isActive = !disabled;
+        _isBanned = disabled;
+        _status = 'Compte chargé (mot de passe non affiché — saisir un nouveau pour réinitialiser).';
+      });
+    } catch (e) {
+      setState(() => _status = 'Erreur chargement: $e');
     }
-
-    setState(() {
-      _passwordCtrl.text = acc.passwordPlain;
-      _isActive = acc.isActive;
-      _isBanned = acc.isBanned;
-      _status = 'Accès chargé.';
-    });
   }
 
   Future<void> _deleteAccess() async {
@@ -150,21 +172,24 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
       return;
     }
 
-    final s = _session;
-    if (s == null || s.churchCode == null) {
-      setState(() => _status = 'Session invalide.');
-      return;
-    }
-
-    final cc = s.churchCode!;
     final ph = _phoneCtrl.text.trim();
-
-    await AuthAccountsStore.removeByPhone(
-      churchCode: cc,
-      phone: ph,
-    );
-
-    setState(() => _status = 'Accès supprimé.');
+    try {
+      final row = await _userRowByPhone(ph);
+      if (row == null) {
+        setState(() => _status = 'Aucun compte à désactiver.');
+        return;
+      }
+      final id = int.tryParse((row['id'] ?? '').toString());
+      if (id == null) throw StateError('id invalide');
+      await ChurchApi.postJson('/church/users/disable', {'user_id': id, 'disabled': true});
+      setState(() {
+        _isBanned = true;
+        _isActive = false;
+        _status = 'Compte désactivé sur le serveur.';
+      });
+    } catch (e) {
+      setState(() => _status = 'Erreur: $e');
+    }
   }
 
   @override
@@ -194,7 +219,6 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
                     style: const TextStyle(fontSize: 12),
                   ),
                   const SizedBox(height: 12),
-
                   Form(
                     key: _formKey,
                     child: Column(
@@ -221,28 +245,32 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
                         TextFormField(
                           controller: _passwordCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Mot de passe',
+                            labelText: 'Mot de passe (création ou réinitialisation)',
                           ),
                           obscureText: true,
                           validator: _validatePassword,
                         ),
                         const SizedBox(height: 10),
                         SwitchListTile(
-                          title: const Text('Actif'),
-                          value: _isActive,
-                          onChanged: (v) => setState(() => _isActive = v),
+                          title: const Text('Actif (non désactivé sur le serveur)'),
+                          value: _isActive && !_isBanned,
+                          onChanged: (v) => setState(() {
+                            _isActive = v;
+                            if (v) _isBanned = false;
+                          }),
                         ),
                         SwitchListTile(
-                          title: const Text('Banni'),
+                          title: const Text('Désactivé / banni (serveur)'),
                           value: _isBanned,
-                          onChanged: (v) => setState(() => _isBanned = v),
+                          onChanged: (v) => setState(() {
+                            _isBanned = v;
+                            if (v) _isActive = false;
+                          }),
                         ),
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 12),
-
                   Row(
                     children: [
                       Expanded(
@@ -263,9 +291,8 @@ final class _AccessManagementPageState extends State<AccessManagementPage> {
                   const SizedBox(height: 10),
                   OutlinedButton(
                     onPressed: _isAuthorizedAdmin ? _deleteAccess : null,
-                    child: const Text('Supprimer'),
+                    child: const Text('Désactiver sur le serveur'),
                   ),
-
                   const SizedBox(height: 12),
                   Text(_status),
                 ],

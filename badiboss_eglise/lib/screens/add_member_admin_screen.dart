@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
-import '../models/member.dart';
 import '../auth/stores/session_store.dart';
+import '../core/active_church_scope.dart';
+import '../models/member.dart';
 import '../core/config.dart';
 import '../core/phone_rd_congo.dart';
-import '../services/local_members_store.dart';
 import '../services/member_list_refresh.dart';
 
 class AddMemberAdminScreen extends StatefulWidget {
@@ -45,13 +44,9 @@ class _AddMemberAdminScreenState extends State<AddMemberAdminScreen> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
       final s = await const SessionStore().read();
-      var churchCode = (s?.churchCode ?? '').trim();
-      if (churchCode.isEmpty) {
-        churchCode = (prefs.getString('auth_church_code') ?? '').trim();
-      }
-      final role = (prefs.getString('auth_role') ?? '').trim();
+      final churchCode = await resolveActiveChurchCode();
+      final role = (s?.roleName ?? '').trim();
       final token = (s?.token ?? '').trim();
 
       final allowed = role == 'admin' || role == 'pasteur' || role == 'super_admin';
@@ -71,65 +66,38 @@ class _AddMemberAdminScreenState extends State<AddMemberAdminScreen> {
         return;
       }
 
-      try {
-        if (token.isEmpty) throw StateError('token manquant');
-        final uri = Uri.parse('${Config.baseUrl}/church/members/create');
-        final res = await http
-            .post(
-              uri,
-              headers: {
-                'accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $token',
-              },
-              body: jsonEncode({
-                'full_name': _fullNameCtrl.text.trim(),
-                'phone': _cleanPhone(_phoneCtrl.text),
-                'sex': sexToString(_sex),
-                'quarter': _quartierCtrl.text.trim(),
-                'marital_status': maritalToString(_marital),
-                'birth_date': _birthDate?.toIso8601String().substring(0, 10),
-                'commune': _communeCtrl.text.trim(),
-                'zone': _zoneCtrl.text.trim(),
-                'address_line': '',
-                'neighborhood': '',
-                'region': '',
-                'province': '',
-                'create_account': false,
-              }),
-            )
-            .timeout(Duration(seconds: Config.timeoutSeconds));
+      if (token.isEmpty) throw StateError('token manquant');
+      final uri = Uri.parse('${Config.baseUrl}/church/members/create');
+      final res = await http
+          .post(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'full_name': _fullNameCtrl.text.trim(),
+              'phone': _cleanPhone(_phoneCtrl.text),
+              'sex': sexToString(_sex),
+              'quarter': _quartierCtrl.text.trim(),
+              'category': 'member',
+              'presence_status': 'unknown',
+              'marital_status': maritalToString(_marital),
+              'birth_date': _birthDate?.toIso8601String().substring(0, 10),
+              'commune': _communeCtrl.text.trim(),
+              'zone': _zoneCtrl.text.trim(),
+              'address_line': '',
+              'neighborhood': '',
+              'region': '',
+              'province': '',
+              'create_account': false,
+            }),
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
 
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          throw StateError(res.body);
-        }
-      } catch (_) {
-        // fallback local (ne casse pas l’existant)
-        final m = Member(
-          id: LocalMembersStore.newId(),
-          churchCode: churchCode,
-          fullName: _fullNameCtrl.text.trim(),
-          phone: _cleanPhone(_phoneCtrl.text),
-          role: 'member',
-          status: MemberStatus.pending, // admin ajoute -> validation
-
-          commune: _communeCtrl.text.trim(),
-          quartier: _quartierCtrl.text.trim(),
-          zone: _zoneCtrl.text.trim(),
-
-          // champs conservés pour compatibilité (vides)
-          neighborhood: '',
-          region: '',
-          province: '',
-          addressLine: '',
-
-          sex: _sex,
-          maritalStatus: _marital,
-          birthDateIso: _birthDate?.toIso8601String() ?? '',
-          createdBy: role,
-          createdAt: DateTime.now(),
-        );
-        await LocalMembersStore.upsert(m);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw StateError(res.body);
       }
 
       setState(() {

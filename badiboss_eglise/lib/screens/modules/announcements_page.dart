@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../auth/models/session.dart';
 import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
-import '../../services/notification_store.dart';
+import '../../services/church_api.dart';
 
 final class AnnouncementsPage extends StatefulWidget {
   const AnnouncementsPage({super.key});
@@ -17,7 +15,6 @@ final class AnnouncementsPage extends StatefulWidget {
 }
 
 final class _AnnouncementsPageState extends State<AnnouncementsPage> {
-  static const _k = 'church_announcements_v1';
   final List<_Announcement> _items = [];
   AppSession? _session;
 
@@ -29,25 +26,37 @@ final class _AnnouncementsPageState extends State<AnnouncementsPage> {
 
   Future<void> _load() async {
     final s = await const SessionStore().read();
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getString(_k);
-    final list = raw == null
-        ? <_Announcement>[]
-        : (jsonDecode(raw) as List)
-            .map((e) => _Announcement.fromMap(Map<String, dynamic>.from(e)))
-            .toList();
-    if (!mounted) return;
-    setState(() {
-      _session = s;
-      _items
-        ..clear()
-        ..addAll(list);
-    });
-  }
-
-  Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_k, jsonEncode(_items.map((e) => e.toMap()).toList()));
+    try {
+      final dec = await ChurchApi.getJson('/church/feed/list?kind=announcement');
+      final list = dec['items'];
+      final next = <_Announcement>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is! Map) continue;
+          final m = Map<String, dynamic>.from(e);
+          final ts = int.tryParse((m['created_at'] ?? '').toString()) ?? 0;
+          final iso = DateTime.fromMillisecondsSinceEpoch(ts * 1000).toIso8601String();
+          next.add(
+            _Announcement(
+              text: (m['body'] ?? '').toString(),
+              sender: (m['sender_phone'] ?? '').toString(),
+              audience: (m['audience'] ?? 'all').toString(),
+              createdAtIso: iso,
+            ),
+          );
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _session = s;
+        _items
+          ..clear()
+          ..addAll(next);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _session = s);
+    }
   }
 
   Future<void> _add() async {
@@ -57,55 +66,53 @@ final class _AnnouncementsPageState extends State<AnnouncementsPage> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
-        title: const Text('Nouvelle annonce'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: c,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Annonce'),
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: audience,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('Église entière')),
-                DropdownMenuItem(value: 'admins', child: Text('Admins')),
-                DropdownMenuItem(value: 'members', child: Text('Membres')),
-              ],
-              onChanged: (v) => setLocal(() => audience = v ?? 'all'),
-              decoration: const InputDecoration(labelText: 'Cible'),
-            ),
+          title: const Text('Nouvelle annonce'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: c,
+                maxLines: 3,
+                decoration: const InputDecoration(labelText: 'Annonce'),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: audience,
+                items: const [
+                  DropdownMenuItem(value: 'all', child: Text('Église entière')),
+                  DropdownMenuItem(value: 'admins', child: Text('Admins')),
+                  DropdownMenuItem(value: 'members', child: Text('Membres')),
+                ],
+                onChanged: (v) => setLocal(() => audience = v ?? 'all'),
+                decoration: const InputDecoration(labelText: 'Cible'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Publier')),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Publier')),
-        ],
-      ),
       ),
     );
     if (ok != true) return;
     final v = c.text.trim();
     if (v.isEmpty) return;
-    setState(() => _items.insert(0, _Announcement(
-      text: v,
-      sender: _session?.phone ?? 'utilisateur',
-      audience: audience,
-      createdAtIso: DateTime.now().toIso8601String(),
-    )));
-    await _save();
-    final cc = (_session?.churchCode ?? '').trim();
-    if (cc.isNotEmpty) {
-      await NotificationStore.push(
-        churchCode: cc,
-        target: audience,
-        title: 'Nouvelle annonce',
-        body: v,
-        sender: _session?.phone ?? 'utilisateur',
-      );
+    try {
+      await ChurchApi.postJson('/church/feed/create', {
+        'kind': 'announcement',
+        'body': v,
+        'audience': audience,
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Échec publication (droits réseau ou permissions).')),
+        );
+      }
+      return;
     }
+    await _load();
   }
 
   @override
@@ -131,7 +138,9 @@ final class _AnnouncementsPageState extends State<AnnouncementsPage> {
                         child: ListTile(
                           leading: const Icon(Icons.campaign_outlined),
                           title: Text(_items[i].text),
-                          subtitle: Text('${_items[i].sender} • cible: ${_items[i].audience} • ${_items[i].createdAtIso.substring(0, 19)}'),
+                          subtitle: Text(
+                            '${_items[i].sender} • cible: ${_items[i].audience} • ${_items[i].createdAtIso.substring(0, 19)}',
+                          ),
                         ),
                       ),
                     ),
@@ -165,17 +174,4 @@ final class _Announcement {
     required this.audience,
     required this.createdAtIso,
   });
-
-  Map<String, dynamic> toMap() => {
-        'text': text,
-        'sender': sender,
-        'audience': audience,
-        'createdAtIso': createdAtIso,
-      };
-  static _Announcement fromMap(Map<String, dynamic> m) => _Announcement(
-        text: (m['text'] ?? '').toString(),
-        sender: (m['sender'] ?? '').toString(),
-        audience: (m['audience'] ?? 'all').toString(),
-        createdAtIso: (m['createdAtIso'] ?? DateTime.now().toIso8601String()).toString(),
-      );
 }

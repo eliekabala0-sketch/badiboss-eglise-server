@@ -12,8 +12,6 @@ import '../../core/config.dart';
 import '../../services/church_service.dart';
 import '../models/activity.dart';
 import '../models/presence_entry.dart';
-import '../stores/activities_store.dart';
-import '../stores/presence_store.dart';
 
 final class PresenceHistoryPage extends StatefulWidget {
   const PresenceHistoryPage({super.key});
@@ -112,16 +110,15 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
       });
 
       await _reloadPresence();
-    } catch (_) {
-      // fallback local
-      final acts = await const ActivitiesStore().load(cc);
+    } catch (e) {
       if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
-        _activities = acts;
-        _selected = acts.isEmpty ? null : acts.first;
-        _status = 'API indisponible : historique local.';
+        _activities = <Activity>[];
+        _selected = null;
+        _items = <PresenceEntry>[];
+        _status = 'Erreur serveur: $msg';
       });
-      await _reloadPresence();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -148,11 +145,13 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
       if (!mounted) return;
       _applyStats(list);
       setState(() => _items = list);
-    } catch (_) {
-      final list = await const PresenceStore().load(churchCode: cc, activityId: a.id);
+    } catch (e) {
       if (!mounted) return;
-      _applyStats(list);
-      setState(() => _items = list);
+      final msg = e is StateError ? e.message : e.toString();
+      setState(() {
+        _items = <PresenceEntry>[];
+        _status = 'Erreur serveur: $msg';
+      });
     }
   }
 

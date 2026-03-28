@@ -2,13 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
 import '../../models/member.dart';
 import '../../auth/stores/session_store.dart';
+import '../../core/active_church_scope.dart';
 import '../../core/config.dart';
-import '../../services/local_members_store.dart';
 import '../../services/member_list_refresh.dart';
 import '../add_member_admin_screen.dart';
 import '../import_members_csv_screen.dart';
@@ -39,7 +38,7 @@ class _TabMembersState extends State<TabMembers> {
   bool get _isAdmin =>
       _role == 'admin' || _role == 'pasteur' || _role == 'super_admin';
 
-  bool get _isMember => _role == 'member';
+  bool get _isMember => _role == 'member' || _role == 'membre';
 
   @override
   void initState() {
@@ -60,14 +59,9 @@ class _TabMembersState extends State<TabMembers> {
 
   Future<void> _init() async {
     setState(() => _loading = true);
-    final prefs = await SharedPreferences.getInstance();
-    _role = (prefs.getString('auth_role') ?? '').trim();
     final s = await const SessionStore().read();
-    var cc = (s?.churchCode ?? '').trim();
-    if (cc.isEmpty) {
-      cc = (prefs.getString('auth_church_code') ?? '').trim();
-    }
-    _churchCode = cc;
+    _role = (s?.roleName ?? '').trim();
+    _churchCode = await resolveActiveChurchCode();
     _token = (s?.token ?? '').trim();
     await _reload();
   }
@@ -79,13 +73,9 @@ class _TabMembersState extends State<TabMembers> {
         _error = null;
       });
     }
-    final prefs = await SharedPreferences.getInstance();
     final s = await const SessionStore().read();
-    var cc = (s?.churchCode ?? '').trim();
-    if (cc.isEmpty) {
-      cc = (prefs.getString('auth_church_code') ?? '').trim();
-    }
-    _churchCode = cc;
+    _role = (s?.roleName ?? '').trim();
+    _churchCode = await resolveActiveChurchCode();
     _token = (s?.token ?? '').trim();
 
     if (_churchCode.isEmpty) {
@@ -97,7 +87,6 @@ class _TabMembersState extends State<TabMembers> {
     }
 
     try {
-      // API-first (fallback local si erreur)
       final api = await _fetchMembersFromApi(
         token: _token,
         pendingOnly: false,
@@ -110,14 +99,11 @@ class _TabMembersState extends State<TabMembers> {
         _items = api;
         _loading = false;
       });
-    } catch (_) {
-      final all = await LocalMembersStore.loadByChurch(_churchCode);
-      all.sort((a, b) =>
-          a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()));
-
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
-        _items = all;
-        _error = 'API indisponible : données locales affichées.';
+        _items = [];
+        _error = 'Impossible de charger les membres depuis le serveur. $msg';
         _loading = false;
       });
     }
@@ -209,9 +195,11 @@ class _TabMembersState extends State<TabMembers> {
     if (!_isAdmin) return;
     try {
       await _validateMemberApi(token: _token, memberNumber: m.id, validated: true);
-    } catch (_) {
-      // fallback local (ne casse pas l’existant)
-      await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.active));
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     await _reload();
   }
@@ -220,8 +208,11 @@ class _TabMembersState extends State<TabMembers> {
     if (!_isAdmin) return;
     try {
       await _setMemberStatusApi(token: _token, memberNumber: m.id, status: 'suspended');
-    } catch (_) {
-      await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.suspended));
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     await _reload();
   }
@@ -230,8 +221,11 @@ class _TabMembersState extends State<TabMembers> {
     if (!_isAdmin) return;
     try {
       await _setMemberStatusApi(token: _token, memberNumber: m.id, status: 'banned');
-    } catch (_) {
-      await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.banned));
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     await _reload();
   }
@@ -240,8 +234,11 @@ class _TabMembersState extends State<TabMembers> {
     if (!_isAdmin) return;
     try {
       await _deleteMemberApi(token: _token, memberNumber: m.id);
-    } catch (_) {
-      await LocalMembersStore.removeById(m.id);
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     await _reload();
   }
@@ -311,13 +308,16 @@ class _TabMembersState extends State<TabMembers> {
 
     try {
       await _updateMemberApi(token: _token, member: updated);
-    } catch (_) {
-      await LocalMembersStore.upsert(updated);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Membre mis à jour.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      return;
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Membre mis à jour.')),
-    );
     await _reload();
   }
 

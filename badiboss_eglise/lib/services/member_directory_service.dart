@@ -1,42 +1,27 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth/stores/session_store.dart';
+import '../core/active_church_scope.dart';
 import '../core/config.dart';
 import '../models/member.dart';
-import 'local_members_store.dart';
 
 final class MemberDirectoryService {
   const MemberDirectoryService();
 
   Future<List<Member>> loadMembersForActiveChurch() async {
-    final prefs = await SharedPreferences.getInstance();
     final session = await const SessionStore().read();
-    final fromSession = (session?.churchCode ?? '').trim();
-    final fromAuth = (prefs.getString('auth_church_code') ?? '').trim();
-    final fromCurrent = (prefs.getString('current_church_code') ?? '').trim();
-    final churchCode = fromSession.isNotEmpty
-        ? fromSession
-        : (fromAuth.isNotEmpty ? fromAuth : fromCurrent);
+    final churchCode = await resolveActiveChurchCode();
 
     if (churchCode.isEmpty) return <Member>[];
     final token = (session?.token ?? '').trim();
-    if (token.isNotEmpty) {
-      try {
-        final apiMembers = await _fetchFromApi(churchCode: churchCode, token: token);
-        if (apiMembers.isNotEmpty) {
-          for (final m in apiMembers) {
-            await LocalMembersStore.upsert(m, churchCode: churchCode);
-          }
-          return apiMembers;
-        }
-      } catch (_) {
-        // fallback local below
-      }
+    if (token.isEmpty) return <Member>[];
+    try {
+      return await _fetchFromApi(churchCode: churchCode, token: token);
+    } catch (_) {
+      return <Member>[];
     }
-    return LocalMembersStore.loadByChurch(churchCode);
   }
 
   Future<List<Member>> _fetchFromApi({

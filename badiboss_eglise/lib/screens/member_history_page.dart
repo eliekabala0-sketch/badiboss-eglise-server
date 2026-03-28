@@ -1,12 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
-import '../models/member.dart';
-import '../services/local_members_store.dart';
-import '../presence/stores/activities_store.dart';
-import '../presence/stores/presence_store.dart';
+import '../auth/stores/session_store.dart';
+import '../core/config.dart';
 import '../services/notification_store.dart';
 
 final class MemberHistoryPage extends StatefulWidget {
@@ -34,10 +32,11 @@ final class _MemberHistoryPageState extends State<MemberHistoryPage> {
       _items.clear();
     });
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final phone = (prefs.getString('auth_phone') ?? '').trim();
-      final cc = (prefs.getString('auth_church_code') ?? '').trim();
-      if (phone.isEmpty || cc.isEmpty) {
+      final s = await const SessionStore().read();
+      var phone = (s?.phone ?? '').trim();
+      final cc = (s?.churchCode ?? '').trim();
+      final token = (s?.token ?? '').trim();
+      if (phone.isEmpty || cc.isEmpty || token.isEmpty) {
         setState(() {
           _loading = false;
           _status = 'Session membre incomplète.';
@@ -45,15 +44,34 @@ final class _MemberHistoryPageState extends State<MemberHistoryPage> {
         return;
       }
 
-      final members = await LocalMembersStore.loadByChurch(cc);
-      Member? me;
-      for (final m in members) {
-        if (m.phone.trim() == phone) {
-          me = m;
-          break;
+      final uriM = Uri.parse('${Config.baseUrl}/church/members/list');
+      final resM = await http
+          .get(
+            uriM,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decM = jsonDecode(resM.body.isEmpty ? '{}' : resM.body);
+      if (decM is! Map || resM.statusCode < 200 || resM.statusCode >= 300) {
+        throw StateError('Impossible de charger les membres');
+      }
+      final ml = decM['members'];
+      String? myNumber;
+      if (ml is List) {
+        for (final e in ml) {
+          if (e is! Map) continue;
+          final row = Map<String, dynamic>.from(e);
+          final p = (row['phone'] ?? '').toString().trim();
+          if (p == phone) {
+            myNumber = (row['member_number'] ?? '').toString();
+            break;
+          }
         }
       }
-      if (me == null) {
+      if (myNumber == null || myNumber.isEmpty) {
         setState(() {
           _loading = false;
           _status = 'Profil membre introuvable.';
@@ -61,21 +79,76 @@ final class _MemberHistoryPageState extends State<MemberHistoryPage> {
         return;
       }
 
-      final acts = await const ActivitiesStore().load(cc);
-      for (final a in acts) {
-        final p = await const PresenceStore().load(churchCode: cc, activityId: a.id);
-        final found = p.where((x) => x.memberId == me!.id || x.memberPhone == me.phone);
-        for (final e in found) {
-          _items.add('Présence: ${a.title} • ${e.markedAt.toLocal()}');
+      final uriE = Uri.parse('${Config.baseUrl}/church/attendance/events/list');
+      final resE = await http
+          .get(
+            uriE,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decE = jsonDecode(resE.body.isEmpty ? '{}' : resE.body);
+      if (decE is! Map || resE.statusCode < 200 || resE.statusCode >= 300) {
+        throw StateError('Impossible de charger les activités');
+      }
+      final evl = decE['events'];
+      if (evl is List) {
+        for (final ev in evl) {
+          if (ev is! Map) continue;
+          final eventId = int.tryParse((ev['id'] ?? '').toString());
+          final title = (ev['title'] ?? '').toString();
+          if (eventId == null) continue;
+          final uriP = Uri.parse('${Config.baseUrl}/church/attendance/list').replace(
+            queryParameters: {'event_id': eventId.toString()},
+          );
+          final resP = await http
+              .get(
+                uriP,
+                headers: {
+                  'accept': 'application/json',
+                  'Authorization': 'Bearer $token',
+                },
+              )
+              .timeout(Duration(seconds: Config.timeoutSeconds));
+          final decP = jsonDecode(resP.body.isEmpty ? '{}' : resP.body);
+          if (decP is! Map || resP.statusCode < 200 || resP.statusCode >= 300) continue;
+          final rec = decP['records'];
+          if (rec is! List) continue;
+          for (final r in rec) {
+            if (r is! Map) continue;
+            final row = Map<String, dynamic>.from(r);
+            final mn = (row['member_number'] ?? '').toString();
+            if (mn != myNumber) continue;
+            final ts = int.tryParse((row['created_at'] ?? '').toString()) ?? 0;
+            final dt = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+            _items.add('Présence: $title • ${dt.toLocal()}');
+          }
         }
       }
 
-      final messagesRaw = prefs.getString('church_messages_v1');
-      if (messagesRaw != null && messagesRaw.trim().isNotEmpty) {
-        final rows = (jsonDecode(messagesRaw) as List).cast<Map>();
-        for (final row in rows.take(10)) {
-          final m = Map<String, dynamic>.from(row);
-          _items.add('Message: ${(m['text'] ?? '').toString()}');
+      final uriF = Uri.parse('${Config.baseUrl}/church/feed/list').replace(
+        queryParameters: {'kind': 'message'},
+      );
+      final resF = await http
+          .get(
+            uriF,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decF = jsonDecode(resF.body.isEmpty ? '{}' : resF.body);
+      if (decF is Map && resF.statusCode >= 200 && resF.statusCode < 300) {
+        final fl = decF['items'];
+        if (fl is List) {
+          for (final e in fl.take(10)) {
+            if (e is! Map) continue;
+            final row = Map<String, dynamic>.from(e);
+            _items.add('Message: ${(row['body'] ?? '').toString()}');
+          }
         }
       }
 

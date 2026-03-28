@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
 import '../auth/stores/session_store.dart';
+import '../core/active_church_scope.dart';
 import '../core/config.dart';
 import '../models/member.dart';
-import '../services/local_members_store.dart';
 import '../services/member_list_refresh.dart';
 
 class PendingMembersScreen extends StatefulWidget {
@@ -35,12 +34,9 @@ class _PendingMembersScreenState extends State<PendingMembersScreen> {
 
   Future<void> _init() async {
     setState(() => _loading = true);
-    final prefs = await SharedPreferences.getInstance();
-    _role = (prefs.getString('auth_role') ?? '').trim();
     final s = await const SessionStore().read();
-    var cc = (s?.churchCode ?? '').trim();
-    if (cc.isEmpty) cc = (prefs.getString('auth_church_code') ?? '').trim();
-    _churchCode = cc;
+    _role = (s?.roleName ?? '').trim();
+    _churchCode = await resolveActiveChurchCode();
     _token = (s?.token ?? '').trim();
     await _reload();
   }
@@ -52,11 +48,9 @@ class _PendingMembersScreenState extends State<PendingMembersScreen> {
         _error = null;
       });
     }
-    final prefs = await SharedPreferences.getInstance();
     final s = await const SessionStore().read();
-    var cc = (s?.churchCode ?? '').trim();
-    if (cc.isEmpty) cc = (prefs.getString('auth_church_code') ?? '').trim();
-    _churchCode = cc;
+    _role = (s?.roleName ?? '').trim();
+    _churchCode = await resolveActiveChurchCode();
     _token = (s?.token ?? '').trim();
 
     if (_churchCode.isEmpty) {
@@ -75,15 +69,11 @@ class _PendingMembersScreenState extends State<PendingMembersScreen> {
         _pending = api;
         _loading = false;
       });
-    } catch (_) {
-      final all = await LocalMembersStore.loadByChurch(_churchCode);
-      final p = all.where((m) => m.status == MemberStatus.pending).toList();
-      p.sort((a, b) =>
-          a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()));
-
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
-        _pending = p;
-        _error = 'API indisponible : données locales affichées.';
+        _pending = [];
+        _error = 'Impossible de charger depuis le serveur. $msg';
         _loading = false;
       });
     }
@@ -93,9 +83,11 @@ class _PendingMembersScreenState extends State<PendingMembersScreen> {
     if (!_canValidate) return;
     try {
       await _validateMemberApi(token: _token, memberNumber: m.id, validated: true);
-    } catch (_) {
-      // fallback local (ne casse pas l’existant)
-      await LocalMembersStore.upsert(m.copyWith(status: MemberStatus.active));
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     MemberListRefresh.bump();
     await _reload();
@@ -103,11 +95,13 @@ class _PendingMembersScreenState extends State<PendingMembersScreen> {
 
   Future<void> _reject(Member m) async {
     if (!_canValidate) return;
-    // choix simple: supprimer la demande (API)
     try {
       await _deleteMemberApi(token: _token, memberNumber: m.id);
-    } catch (_) {
-      await LocalMembersStore.removeById(m.id);
+    } catch (e) {
+      if (mounted) {
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
     await _reload();
   }

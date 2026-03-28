@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../auth/stores/session_store.dart';
 import '../services/notification_store.dart';
 
 final class NotificationsPage extends StatefulWidget {
@@ -24,10 +24,10 @@ final class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   Future<void> _load() async {
-    final p = await SharedPreferences.getInstance();
-    _phone = (p.getString('auth_phone') ?? '').trim();
-    _role = (p.getString('auth_role') ?? '').trim();
-    _church = (p.getString('auth_church_code') ?? '').trim();
+    final s = await const SessionStore().read();
+    _phone = (s?.phone ?? '').trim();
+    _role = (s?.roleName ?? '').trim();
+    _church = (s?.churchCode ?? '').trim();
     final all = await NotificationStore.loadAll();
     _items = all.where((n) {
       return NotificationStore.isTargetFor(

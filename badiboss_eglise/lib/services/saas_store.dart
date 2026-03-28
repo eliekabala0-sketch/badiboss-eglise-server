@@ -1,6 +1,6 @@
-import 'dart:convert';
-
-import 'package:shared_preferences/shared_preferences.dart';
+import '../auth/models/user_role.dart';
+import '../auth/stores/session_store.dart';
+import 'church_api.dart';
 
 final class SaaSPlan {
   final String id;
@@ -37,7 +37,9 @@ final class SaaSPlan {
   static SaaSPlan fromMap(Map<String, dynamic> m) => SaaSPlan(
         id: (m['id'] ?? '').toString(),
         name: (m['name'] ?? 'Plan').toString(),
-        durationDays: (m['durationDays'] ?? 30) as int,
+        durationDays: (m['durationDays'] is int)
+            ? m['durationDays'] as int
+            : int.tryParse((m['durationDays'] ?? '30').toString()) ?? 30,
         priceUsd: ((m['priceUsd'] ?? m['priceCdf'] ?? 0) as num).toDouble(),
         allowFinance: (m['allowFinance'] ?? true) == true,
         allowReports: (m['allowReports'] ?? true) == true,
@@ -49,18 +51,18 @@ final class SaaSPlan {
 final class SaaSChurchSubscription {
   final String churchCode;
   String churchName;
-  String status; // pending|trial|active|expired|suspended|banned
+  String status;
   String planId;
   String planName;
   int trialDays;
   int graceDays;
   bool reminderEnabled;
   bool contractExempt;
-  String paymentState; // paid|unpaid|grace|exempted
+  String paymentState;
   String startedAtIso;
   String expiresAtIso;
   String graceEndsAtIso;
-  String source; // super_admin|self_service
+  String source;
 
   SaaSChurchSubscription({
     required this.churchCode,
@@ -103,8 +105,12 @@ final class SaaSChurchSubscription {
         status: (m['status'] ?? 'pending').toString(),
         planId: (m['planId'] ?? 'plan_basic').toString(),
         planName: (m['planName'] ?? 'Basic').toString(),
-        trialDays: (m['trialDays'] ?? 7) as int,
-        graceDays: (m['graceDays'] ?? 2) as int,
+        trialDays: (m['trialDays'] is int)
+            ? m['trialDays'] as int
+            : int.tryParse((m['trialDays'] ?? '7').toString()) ?? 7,
+        graceDays: (m['graceDays'] is int)
+            ? m['graceDays'] as int
+            : int.tryParse((m['graceDays'] ?? '2').toString()) ?? 2,
         reminderEnabled: (m['reminderEnabled'] ?? true) == true,
         contractExempt: (m['contractExempt'] ?? false) == true,
         paymentState: (m['paymentState'] ?? 'unpaid').toString(),
@@ -116,15 +122,7 @@ final class SaaSChurchSubscription {
 }
 
 final class SaaSStore {
-  static const _kPlans = 'saas_plans_v1';
-  static const _kChurches = 'saas_churches_v1';
-  static const _kGlobal = 'saas_global_settings_v1';
-
-  static Future<List<SaaSPlan>> loadPlans() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kPlans);
-    if (raw == null || raw.trim().isEmpty) {
-      final seed = <SaaSPlan>[
+  static List<SaaSPlan> _defaultPlans() => <SaaSPlan>[
         SaaSPlan(
           id: 'plan_basic',
           name: 'Basic',
@@ -146,52 +144,124 @@ final class SaaSStore {
           allowMembers: true,
         ),
       ];
-      await savePlans(seed);
-      return seed;
-    }
-    final list = (jsonDecode(raw) as List)
-        .map((e) => SaaSPlan.fromMap(Map<String, dynamic>.from(e as Map)))
-        .toList();
-    return list;
+
+  static Future<List<SaaSPlan>> loadPlans() async {
+    try {
+      final s = await const SessionStore().read();
+      if ((s?.token ?? '').trim().isEmpty) return _defaultPlans();
+      final dec = await ChurchApi.getJson('/church/billing/subscription');
+      final pl = dec['plans'];
+      if (pl is List && pl.isNotEmpty) {
+        return pl
+            .whereType<Map>()
+            .map((e) => SaaSPlan.fromMap(Map<String, dynamic>.from(e)))
+            .toList();
+      }
+    } catch (_) {}
+    return _defaultPlans();
   }
 
   static Future<void> savePlans(List<SaaSPlan> plans) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kPlans, jsonEncode(plans.map((e) => e.toMap()).toList()));
+    await persistSuperSaasState(plans: plans);
   }
 
+  /// Églises connues du serveur (SQLite), sans abonnement SaaS détaillé.
   static Future<List<SaaSChurchSubscription>> loadChurches() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kChurches);
-    if (raw == null || raw.trim().isEmpty) return <SaaSChurchSubscription>[];
-    return (jsonDecode(raw) as List)
-        .map((e) => SaaSChurchSubscription.fromMap(Map<String, dynamic>.from(e as Map)))
-        .toList();
+    try {
+      final dec = await ChurchApi.getPublicJson('/public/churches/list');
+      final ch = dec['churches'];
+      if (ch is! List) return <SaaSChurchSubscription>[];
+      return ch.whereType<Map>().map((e) {
+        final m = Map<String, dynamic>.from(e);
+        final code = (m['church_code'] ?? '').toString();
+        final suspended = m['is_suspended'] == 1 || m['is_suspended'] == true;
+        final now = DateTime.now();
+        return SaaSChurchSubscription(
+          churchCode: code,
+          churchName: (m['name'] ?? code).toString(),
+          status: suspended ? 'suspended' : 'active',
+          planId: 'plan_basic',
+          planName: 'Basic',
+          trialDays: 7,
+          graceDays: 2,
+          reminderEnabled: true,
+          contractExempt: false,
+          paymentState: 'unpaid',
+          startedAtIso: now.toIso8601String(),
+          expiresAtIso: now.add(const Duration(days: 7)).toIso8601String(),
+          graceEndsAtIso: now.add(const Duration(days: 9)).toIso8601String(),
+          source: 'server',
+        );
+      }).toList();
+    } catch (_) {
+      return <SaaSChurchSubscription>[];
+    }
   }
 
   static Future<void> saveChurches(List<SaaSChurchSubscription> churches) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kChurches, jsonEncode(churches.map((e) => e.toMap()).toList()));
+    await persistSuperSaasState(churchSubscriptions: churches);
   }
 
   static Future<Map<String, dynamic>> loadGlobal() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kGlobal);
-    if (raw == null || raw.trim().isEmpty) {
-      final seed = <String, dynamic>{
+    try {
+      final s = await const SessionStore().read();
+      if ((s?.token ?? '').trim().isEmpty || s!.role != UserRole.superAdmin) {
+        return _defaultGlobal();
+      }
+      final dec = await ChurchApi.getJson('/super/saas/state');
+      final g = dec['saas_global'];
+      if (g is Map && g.isNotEmpty) {
+        return Map<String, dynamic>.from(g);
+      }
+    } catch (_) {}
+    return _defaultGlobal();
+  }
+
+  static Map<String, dynamic> _defaultGlobal() => <String, dynamic>{
         'trialDaysDefault': 7,
         'graceDaysDefault': 2,
         'reminderEnabled': true,
         'trialModules': <String>['members', 'presence', 'reports'],
+        'allowSelfRegistration': true,
+        'requireValidation': true,
+        'enableGuestScan': true,
       };
-      await saveGlobal(seed);
-      return seed;
-    }
-    return Map<String, dynamic>.from(jsonDecode(raw) as Map);
-  }
 
   static Future<void> saveGlobal(Map<String, dynamic> data) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kGlobal, jsonEncode(data));
+    await persistSuperSaasState(saasGlobal: data);
+  }
+
+  /// Fusionne avec l’état SaaS serveur (super admin uniquement).
+  static Future<void> persistSuperSaasState({
+    List<SaaSPlan>? plans,
+    List<SaaSChurchSubscription>? churchSubscriptions,
+    Map<String, dynamic>? saasGlobal,
+  }) async {
+    final s = await const SessionStore().read();
+    if (s == null || s.role != UserRole.superAdmin || s.token.trim().isEmpty) {
+      return;
+    }
+    if (plans != null && churchSubscriptions != null && saasGlobal != null) {
+      await ChurchApi.postJson('/super/saas/state', {
+        'plans': plans.map((e) => e.toMap()).toList(),
+        'church_subscriptions': churchSubscriptions.map((e) => e.toMap()).toList(),
+        'saas_global': saasGlobal,
+      });
+      return;
+    }
+    final cur = await ChurchApi.getJson('/super/saas/state');
+    final body = <String, dynamic>{
+      'plans': plans != null
+          ? plans.map((e) => e.toMap()).toList()
+          : (cur['plans'] is List ? cur['plans'] : []),
+      'church_subscriptions': churchSubscriptions != null
+          ? churchSubscriptions.map((e) => e.toMap()).toList()
+          : (cur['church_subscriptions'] is List ? cur['church_subscriptions'] : []),
+      'saas_global': saasGlobal ??
+          (cur['saas_global'] is Map
+              ? Map<String, dynamic>.from(cur['saas_global'] as Map)
+              : <String, dynamic>{}),
+    };
+    await ChurchApi.postJson('/super/saas/state', body);
   }
 }

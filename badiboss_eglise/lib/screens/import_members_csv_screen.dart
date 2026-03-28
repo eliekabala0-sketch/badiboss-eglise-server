@@ -1,10 +1,9 @@
-import 'dart:math';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import '../models/member.dart';
-import '../services/local_members_store.dart';
+import 'package:http/http.dart' as http;
+import '../auth/stores/session_store.dart';
+import '../core/config.dart';
 
 class ImportMembersCsvScreen extends StatefulWidget {
   const ImportMembersCsvScreen({super.key});
@@ -18,12 +17,6 @@ class _ImportMembersCsvScreenState extends State<ImportMembersCsvScreen> {
   bool _loading = false;
   String _message = '';
 
-  String _randId() {
-    final r = Random();
-    final n = 100000 + r.nextInt(900000);
-    return "m_$n";
-  }
-
   /// CSV attendu (avec entête):
   /// fullName,phone,sex,maritalStatus,commune,quartier,zone,neighborhood,region,province,addressLine
   ///
@@ -35,17 +28,10 @@ class _ImportMembersCsvScreenState extends State<ImportMembersCsvScreen> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final churchCode = (prefs.getString('auth_church_code') ?? '').trim();
-      final role = (prefs.getString('auth_role') ?? '').trim();
-
-      if (churchCode.isEmpty) {
-        setState(() {
-          _loading = false;
-          _message = "churchCode manquant en session.";
-        });
-        return;
-      }
+      final s = await const SessionStore().read();
+      final role = (s?.roleName ?? '').trim();
+      final token = (s?.token ?? '').trim();
+      if (token.isEmpty) throw StateError('token manquant');
 
       // Admin/Pasteur/Super_admin autorisés pour importer
       final allowed =
@@ -105,27 +91,36 @@ class _ImportMembersCsvScreenState extends State<ImportMembersCsvScreen> {
           continue; // skip ligne invalide
         }
 
-        final m = Member(
-          id: _randId(),
-          churchCode: churchCode,
-          fullName: fullName,
-          phone: phone,
-          role: 'member',
-          status: MemberStatus.pending, // IMPORT -> à valider
-          commune: commune,
-          quartier: quartier,
-          zone: zone,
-          neighborhood: neighborhood,
-          region: region,
-          province: province,
-          addressLine: addressLine,
-          sex: sex.toLowerCase().startsWith('f') ? Sex.female : Sex.male,
-          maritalStatus: _parseMarital(marital),
-          createdBy: role,
-          createdAt: DateTime.now(),
-        );
-
-        await LocalMembersStore.upsert(m);
+        final uri = Uri.parse('${Config.baseUrl}/church/members/create');
+        final res = await http
+            .post(
+              uri,
+              headers: {
+                'accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+              body: jsonEncode({
+                'full_name': fullName,
+                'phone': phone,
+                'sex': sex.toLowerCase().startsWith('f') ? 'female' : 'male',
+                'quarter': quartier,
+                'category': 'member',
+                'presence_status': 'unknown',
+                'marital_status': _parseMarital(marital),
+                'commune': commune,
+                'zone': zone,
+                'address_line': addressLine,
+                'neighborhood': neighborhood,
+                'region': region,
+                'province': province,
+                'create_account': false,
+              }),
+            )
+            .timeout(Duration(seconds: Config.timeoutSeconds));
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw StateError(res.body);
+        }
         imported++;
       }
 
@@ -142,12 +137,12 @@ class _ImportMembersCsvScreenState extends State<ImportMembersCsvScreen> {
     }
   }
 
-  MaritalStatus _parseMarital(String v) {
+  String _parseMarital(String v) {
     final x = v.trim().toLowerCase();
-    if (x.startsWith('mar')) return MaritalStatus.married;
-    if (x.startsWith('div')) return MaritalStatus.divorced;
-    if (x.startsWith('wid') || x.startsWith('veu')) return MaritalStatus.widowed;
-    return MaritalStatus.single;
+    if (x.startsWith('mar')) return 'married';
+    if (x.startsWith('div')) return 'divorced';
+    if (x.startsWith('wid') || x.startsWith('veu')) return 'widowed';
+    return 'single';
   }
 
   @override

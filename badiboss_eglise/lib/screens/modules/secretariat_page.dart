@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../auth/permissions.dart';
 import '../../auth/ui/permission_gate.dart';
+import '../../services/church_api.dart';
 import '../../services/export_file_service.dart';
 
 final class SecretariatPage extends StatefulWidget {
@@ -15,7 +14,6 @@ final class SecretariatPage extends StatefulWidget {
 }
 
 final class _SecretariatPageState extends State<SecretariatPage> {
-  static const _k = 'secretariat_documents_v1';
   final List<_DocItem> _items = [];
   String _status = '';
 
@@ -26,22 +24,34 @@ final class _SecretariatPageState extends State<SecretariatPage> {
   }
 
   Future<void> _load() async {
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getString(_k);
-    final docs = raw == null
-        ? <_DocItem>[]
-        : (jsonDecode(raw) as List).map((e) => _DocItem.fromMap(Map<String, dynamic>.from(e))).toList();
+    try {
+      final dec = await ChurchApi.getJson('/church/documents/secretariat');
+      final pay = dec['payload'];
+      if (pay is Map) {
+        final raw = pay['items'];
+        if (raw is List) {
+          final docs = raw
+              .whereType<Map>()
+              .map((e) => _DocItem.fromMap(Map<String, dynamic>.from(e)))
+              .toList();
+          if (!mounted) return;
+          setState(() {
+            _items
+              ..clear()
+              ..addAll(docs);
+          });
+          return;
+        }
+      }
+    } catch (_) {}
     if (!mounted) return;
-    setState(() {
-      _items
-        ..clear()
-        ..addAll(docs);
-    });
+    setState(() => _items.clear());
   }
 
-  Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_k, jsonEncode(_items.map((e) => e.toMap()).toList()));
+  Future<void> _persist() async {
+    await ChurchApi.postJson('/church/documents/secretariat', {
+      'payload': {'items': _items.map((e) => e.toMap()).toList()},
+    });
   }
 
   Future<void> _addDoc() async {
@@ -82,7 +92,7 @@ final class _SecretariatPageState extends State<SecretariatPage> {
         ),
       );
     });
-    await _save();
+    await _persist();
   }
 
   Future<void> _exportDocs() async {

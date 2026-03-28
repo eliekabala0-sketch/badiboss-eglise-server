@@ -8,11 +8,8 @@ import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
 import '../../models/member.dart';
-import '../../services/local_members_store.dart';
 import '../models/activity.dart';
 import '../models/presence_entry.dart';
-import '../stores/activities_store.dart';
-import '../stores/presence_store.dart';
 import '../../core/config.dart';
 import '../../core/phone_rd_congo.dart';
 import '../../services/church_service.dart';
@@ -133,18 +130,14 @@ final class _PresenceMarkPageState extends State<PresenceMarkPage> {
         _selectedMember = null;
         _loading = false;
       });
-    } catch (_) {
-      // fallback local
-      final open = await const ActivitiesStore().findOpen(cc);
-      final members = await LocalMembersStore.loadByChurch(cc);
+    } catch (e) {
       if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
-        _currentActivity = open;
-        _status = (open == null)
-            ? 'Aucune activité OPEN. Lance une activité d’abord.'
-            : 'API indisponible : activité locale utilisée.';
-        _members = members;
+        _currentActivity = null;
+        _members = <Member>[];
         _selectedMember = null;
+        _status = 'Erreur serveur: $msg';
         _loading = false;
       });
     }
@@ -205,44 +198,13 @@ final class _PresenceMarkPageState extends State<PresenceMarkPage> {
       unawaited(_silentReload());
       return;
     } catch (e) {
-      if (e is StateError) {
-        setState(() {
-          _loading = false;
-          _status = e.message;
-        });
-        return;
-      }
-    }
-
-    final member = _resolveMemberLocalFallback(cc);
-    if (member == null) {
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
         _loading = false;
-        _status = 'Membre introuvable (fallback local).';
+        _status = msg;
       });
       return;
     }
-    final entry = PresenceEntry(
-      id: 'pres_${DateTime.now().millisecondsSinceEpoch}',
-      churchCode: cc,
-      activityId: a.id,
-      memberId: member.id,
-      memberPhone: member.phone,
-      memberName: member.fullName,
-      markedByPhone: s.phone,
-      markedAt: DateTime.now(),
-    );
-    await const PresenceStore().upsert(entry);
-
-    _phoneCtrl.clear();
-    _memberCodeCtrl.clear();
-    _scanCtrl.clear();
-    _selectedMember = null;
-    setState(() {
-      _loading = false;
-      _status = 'Présence enregistrée (local): ${member.fullName}';
-    });
-    unawaited(_silentReload());
   }
 
   Future<void> _markGuestPresence() async {
@@ -348,42 +310,6 @@ final class _PresenceMarkPageState extends State<PresenceMarkPage> {
         if (phonesMatchRdCongo(phone, m.phone)) return m;
       }
       return null;
-    }
-    return null;
-  }
-
-  Member? _resolveMemberLocalFallback(String churchCode) {
-    final members = _members.isNotEmpty ? _members : <Member>[];
-
-    if (_modeIndex == 0) {
-      final code = _memberCodeCtrl.text.trim();
-      if (code.isEmpty) return null;
-      for (final m in members) {
-        if (m.id.trim().toUpperCase() == code.toUpperCase()) return m;
-      }
-      return null;
-    }
-
-    if (_modeIndex == 1) {
-      final phone = _phoneCtrl.text.trim();
-      if (phone.isEmpty) return null;
-      for (final m in members) {
-        if (phonesMatchRdCongo(phone, m.phone)) return m;
-      }
-      return null;
-    }
-
-    if (_modeIndex == 2) {
-      return _selectedMember;
-    }
-
-    final raw = _scanCtrl.text.trim();
-    final parsed = _parseScanPayload(raw);
-    if (parsed == null) return null;
-    for (final m in members) {
-      if (parsed.type == _ScanType.memberCode && m.id.trim().toUpperCase() == parsed.value.toUpperCase()) return m;
-      if (parsed.type == _ScanType.phone &&
-          phonesMatchRdCongo(parsed.value, m.phone)) return m;
     }
     return null;
   }

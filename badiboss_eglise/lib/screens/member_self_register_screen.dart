@@ -2,14 +2,12 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
 import '../models/member.dart';
 import '../auth/stores/session_store.dart';
 import '../core/config.dart';
 import '../core/phone_rd_congo.dart';
-import '../services/local_members_store.dart';
 import '../services/member_list_refresh.dart';
 import '../services/saas_store.dart';
 
@@ -52,14 +50,10 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
       final s = await const SessionStore().read();
       var churchCode = _churchCode.text.trim();
       if (churchCode.isEmpty) {
         churchCode = (s?.churchCode ?? '').trim();
-      }
-      if (churchCode.isEmpty) {
-        churchCode = (prefs.getString('auth_church_code') ?? '').trim();
       }
       final token = (s?.token ?? '').trim();
 
@@ -159,42 +153,39 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
         createdAt: DateTime.now(),
       );
 
-      try {
-        if (token.isEmpty) throw StateError('token manquant');
-        final uri = Uri.parse('${Config.baseUrl}/church/members/create');
-        final res = await http
-            .post(
-              uri,
-              headers: {
-                'accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $token',
-              },
-              body: jsonEncode({
-                'full_name': m.fullName,
-                'phone': m.phone,
-                'sex': sexToString(_sex),
-                'quarter': m.quartier,
-                'marital_status': maritalToString(_marital),
-                'birth_date': _birthDate?.toIso8601String().substring(0, 10),
-                'commune': m.commune,
-                'zone': m.zone,
-                'address_line': '',
-                'neighborhood': '',
-                'region': '',
-                'province': '',
-                'create_account': false,
-                'password': pw,
-              }),
-            )
-            .timeout(Duration(seconds: Config.timeoutSeconds));
+      if (token.isEmpty) throw StateError('token manquant');
+      final uri = Uri.parse('${Config.baseUrl}/church/members/create');
+      final res = await http
+          .post(
+            uri,
+            headers: {
+              'accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'full_name': m.fullName,
+              'phone': m.phone,
+              'sex': sexToString(_sex),
+              'quarter': m.quartier,
+              'category': 'member',
+              'presence_status': 'unknown',
+              'marital_status': maritalToString(_marital),
+              'birth_date': _birthDate?.toIso8601String().substring(0, 10),
+              'commune': m.commune,
+              'zone': m.zone,
+              'address_line': '',
+              'neighborhood': '',
+              'region': '',
+              'province': '',
+              'create_account': false,
+              'password': pw,
+            }),
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
 
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          throw StateError(res.body);
-        }
-      } catch (_) {
-        // fallback local (ne casse pas l’existant)
-        await LocalMembersStore.upsert(m);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw StateError(res.body);
       }
 
       MemberListRefresh.bump();

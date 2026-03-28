@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../../auth/models/session.dart';
 import '../../auth/permissions.dart';
-import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
-import '../../services/notification_store.dart';
+import '../../services/church_api.dart';
 import '../../widgets/scroll_edge_fabs.dart';
 
 final class MessagesPage extends StatefulWidget {
@@ -18,9 +14,7 @@ final class MessagesPage extends StatefulWidget {
 }
 
 final class _MessagesPageState extends State<MessagesPage> {
-  static const _k = 'church_messages_v1';
   final List<_Msg> _items = [];
-  AppSession? _session;
   final _scrollCtrl = ScrollController();
 
   @override
@@ -30,24 +24,36 @@ final class _MessagesPageState extends State<MessagesPage> {
   }
 
   Future<void> _load() async {
-    final s = await const SessionStore().read();
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getString(_k);
-    final data = raw == null
-        ? <_Msg>[]
-        : (jsonDecode(raw) as List).map((e) => _Msg.fromMap(Map<String, dynamic>.from(e))).toList();
-    if (!mounted) return;
-    setState(() {
-      _session = s;
-      _items
-        ..clear()
-        ..addAll(data);
-    });
-  }
-
-  Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_k, jsonEncode(_items.map((e) => e.toMap()).toList()));
+    try {
+      final dec = await ChurchApi.getJson('/church/feed/list?kind=message');
+      final list = dec['items'];
+      final next = <_Msg>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is! Map) continue;
+          final m = Map<String, dynamic>.from(e);
+          final ts = int.tryParse((m['created_at'] ?? '').toString()) ?? 0;
+          final iso = DateTime.fromMillisecondsSinceEpoch(ts * 1000).toIso8601String();
+          next.add(
+            _Msg(
+              text: (m['body'] ?? '').toString(),
+              sender: (m['sender_phone'] ?? '').toString(),
+              target: (m['audience'] ?? 'all').toString(),
+              createdAtIso: iso,
+            ),
+          );
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _items
+          ..clear()
+          ..addAll(next);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _items.clear());
+    }
   }
 
   Future<void> _send() async {
@@ -57,60 +63,53 @@ final class _MessagesPageState extends State<MessagesPage> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
-        title: const Text('Nouveau message'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: c,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Message'),
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: target,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('Toute l\'église')),
-                DropdownMenuItem(value: 'admins', child: Text('Admins')),
-                DropdownMenuItem(value: 'members', child: Text('Membres')),
-              ],
-              onChanged: (v) => setLocal(() => target = v ?? 'all'),
-              decoration: const InputDecoration(labelText: 'Destinataires'),
-            ),
+          title: const Text('Nouveau message'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: c,
+                maxLines: 3,
+                decoration: const InputDecoration(labelText: 'Message'),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: target,
+                items: const [
+                  DropdownMenuItem(value: 'all', child: Text('Toute l\'église')),
+                  DropdownMenuItem(value: 'admins', child: Text('Admins')),
+                  DropdownMenuItem(value: 'members', child: Text('Membres')),
+                ],
+                onChanged: (v) => setLocal(() => target = v ?? 'all'),
+                decoration: const InputDecoration(labelText: 'Destinataires'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Envoyer')),
-        ],
-      ),
       ),
     );
     if (ok != true) return;
     final text = c.text.trim();
     if (text.isEmpty) return;
-    setState(() {
-      _items.insert(
-        0,
-        _Msg(
-          text: text,
-          sender: _session?.phone ?? 'utilisateur',
-          target: target,
-          createdAtIso: DateTime.now().toIso8601String(),
-        ),
-      );
-    });
-    await _save();
-    final cc = (_session?.churchCode ?? '').trim();
-    if (cc.isNotEmpty) {
-      await NotificationStore.push(
-        churchCode: cc,
-        target: target,
-        title: 'Nouveau message',
-        body: text,
-        sender: _session?.phone ?? 'utilisateur',
-      );
+    try {
+      await ChurchApi.postJson('/church/feed/create', {
+        'kind': 'message',
+        'body': text,
+        'audience': target,
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Échec envoi (droits réseau ou permissions).')),
+        );
+      }
+      return;
     }
+    await _load();
   }
 
   @override
@@ -180,18 +179,4 @@ final class _Msg {
   final String target;
   final String createdAtIso;
   const _Msg({required this.text, required this.sender, required this.target, required this.createdAtIso});
-
-  Map<String, dynamic> toMap() => {
-        'text': text,
-        'sender': sender,
-        'target': target,
-        'createdAtIso': createdAtIso,
-      };
-
-  static _Msg fromMap(Map<String, dynamic> m) => _Msg(
-        text: (m['text'] ?? '').toString(),
-        sender: (m['sender'] ?? '').toString(),
-        target: (m['target'] ?? 'all').toString(),
-        createdAtIso: (m['createdAtIso'] ?? DateTime.now().toIso8601String()).toString(),
-      );
 }

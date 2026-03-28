@@ -1,14 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
 import '../../auth/models/session.dart';
 import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
-import '../../services/local_members_store.dart';
-import '../../presence/stores/activities_store.dart';
-import '../../presence/stores/presence_store.dart';
+import '../../core/config.dart';
 import '../../services/church_service.dart';
 import 'reports_export_page.dart';
 
@@ -59,20 +57,92 @@ final class _ReportsPageState extends State<ReportsPage> {
       _status = '';
     });
     try {
-      final members = await LocalMembersStore.loadByChurch(cc);
-      final acts = await const ActivitiesStore().load(cc);
-      var presenceTotal = 0;
-      for (final a in acts) {
-        final p = await const PresenceStore().load(churchCode: cc, activityId: a.id);
-        presenceTotal += p.length;
+      final token = s.token.trim();
+      if (token.isEmpty) throw StateError('token manquant');
+
+      final uriM = Uri.parse('${Config.baseUrl}/church/members/list');
+      final resM = await http
+          .get(
+            uriM,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decM = jsonDecode(resM.body.isEmpty ? '{}' : resM.body);
+      if (decM is! Map || resM.statusCode < 200 || resM.statusCode >= 300) {
+        throw StateError('Impossible de charger les membres');
       }
-      final sp = await SharedPreferences.getInstance();
-      final annRaw = sp.getString('church_announcements_v1');
-      final ann = annRaw == null ? 0 : (jsonDecode(annRaw) as List).length;
+      final ml = decM['members'];
+      final memberCount = ml is List ? ml.length : 0;
+
+      final uriE = Uri.parse('${Config.baseUrl}/church/attendance/events/list');
+      final resE = await http
+          .get(
+            uriE,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decE = jsonDecode(resE.body.isEmpty ? '{}' : resE.body);
+      if (decE is! Map || resE.statusCode < 200 || resE.statusCode >= 300) {
+        throw StateError('Impossible de charger les activités');
+      }
+      final evl = decE['events'];
+      final eventCount = evl is List ? evl.length : 0;
+
+      var presenceTotal = 0;
+      if (evl is List) {
+        for (final ev in evl) {
+          if (ev is! Map) continue;
+          final eid = int.tryParse((ev['id'] ?? '').toString());
+          if (eid == null) continue;
+          final uriP = Uri.parse('${Config.baseUrl}/church/attendance/list').replace(
+            queryParameters: {'event_id': eid.toString()},
+          );
+          final resP = await http
+              .get(
+                uriP,
+                headers: {
+                  'accept': 'application/json',
+                  'Authorization': 'Bearer $token',
+                },
+              )
+              .timeout(Duration(seconds: Config.timeoutSeconds));
+          final decP = jsonDecode(resP.body.isEmpty ? '{}' : resP.body);
+          if (decP is! Map || resP.statusCode < 200 || resP.statusCode >= 300) {
+            continue;
+          }
+          final rec = decP['records'];
+          if (rec is List) presenceTotal += rec.length;
+        }
+      }
+
+      final uriA = Uri.parse('${Config.baseUrl}/church/feed/list').replace(
+        queryParameters: {'kind': 'announcement'},
+      );
+      final resA = await http
+          .get(
+            uriA,
+            headers: {
+              'accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(Duration(seconds: Config.timeoutSeconds));
+      final decA = jsonDecode(resA.body.isEmpty ? '{}' : resA.body);
+      var ann = 0;
+      if (decA is Map && resA.statusCode >= 200 && resA.statusCode < 300) {
+        final il = decA['items'];
+        ann = il is List ? il.length : 0;
+      }
       if (!mounted) return;
       setState(() {
-        _members = members.length;
-        _activities = acts.length;
+        _members = memberCount;
+        _activities = eventCount;
         _presences = presenceTotal;
         _announcements = ann;
         _loading = false;

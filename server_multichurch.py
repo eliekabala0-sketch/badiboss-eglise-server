@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import sqlite3
 import json
@@ -319,6 +319,121 @@ def ensure_attendance_columns():
 
 ensure_attendance_columns()
 
+def ensure_pastoral_relations_table():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pastoral_relations(
+      church_id INTEGER NOT NULL,
+      relation_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (church_id, relation_id)
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_pastoral_relations_table()
+
+def ensure_church_extended_tables():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS church_documents(
+      church_id INTEGER NOT NULL,
+      doc_key TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (church_id, doc_key)
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS church_feed_items(
+      id TEXT PRIMARY KEY,
+      church_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      body TEXT NOT NULL,
+      audience TEXT NOT NULL,
+      sender_phone TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS church_notifications(
+      id TEXT PRIMARY KEY,
+      church_id INTEGER NOT NULL,
+      target TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      sender_phone TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      read_phones_json TEXT NOT NULL DEFAULT '[]'
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS platform_kv(
+      kv_key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_church_extended_tables()
+
+def church_document_get(church_id: int, doc_key: str) -> Dict[str, Any]:
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT payload_json FROM church_documents WHERE church_id=? AND doc_key=?",
+        (church_id, doc_key),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    try:
+        o = json.loads(row["payload_json"])
+        return o if isinstance(o, dict) else {}
+    except Exception:
+        return {}
+
+def church_document_set(church_id: int, doc_key: str, payload: Dict[str, Any]) -> None:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO church_documents(church_id, doc_key, payload_json, updated_at) VALUES(?,?,?,?) "
+        "ON CONFLICT(church_id, doc_key) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
+        (church_id, doc_key, json.dumps(payload, ensure_ascii=False), now_ts()),
+    )
+    conn.commit()
+    conn.close()
+
+def platform_kv_get(key: str) -> Dict[str, Any]:
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT value_json FROM platform_kv WHERE kv_key=?", (key,)).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    try:
+        o = json.loads(row["value_json"])
+        return o if isinstance(o, dict) else {}
+    except Exception:
+        return {}
+
+def platform_kv_set(key: str, payload: Dict[str, Any]) -> None:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO platform_kv(kv_key, value_json, updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(kv_key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+        (key, json.dumps(payload, ensure_ascii=False), now_ts()),
+    )
+    conn.commit()
+    conn.close()
+
 def ensure_finance_defaults_for_church(church_id: int):
     """
     Idempotent: insère les rubriques finance par défaut si aucune n'existe.
@@ -390,6 +505,7 @@ def default_permissions_for_role(role: str) -> List[str]:
             "church.read",
             "members.read","members.create","members.update","members.validate",
             "attendance.write",
+            "relations.read","relations.write","relations.archive",
             "announcements.read","announcements.write",
             "programs.read","programs.write",
             "me.read","me.update","me.attendance.read","me.finance.read","me.assignments.read","me.notifications.read",
@@ -897,7 +1013,7 @@ class SuspendChurchIn(BaseModel):
 
 class CreateUserIn(BaseModel):
     phone: str
-    full_name: str
+    full_name: str = ""
     password: str
     role: str  # SECRETAIRE, FINANCE, PROTOCOLE, MEMBRE
 
@@ -989,6 +1105,39 @@ class ProtocolCheckinIn(BaseModel):
     assignment_id: int
     checked_in: bool = True
 
+class PastoralRelationsSyncIn(BaseModel):
+    relations: List[Dict[str, Any]]
+
+class ChurchDocumentSyncIn(BaseModel):
+    payload: Dict[str, Any]
+
+class FeedCreateIn(BaseModel):
+    kind: str  # announcement | message
+    body: str
+    audience: str = "all"
+
+class NotificationMarkReadIn(BaseModel):
+    notification_id: str
+
+class UserPasswordResetIn(BaseModel):
+    user_id: int
+    new_password: str
+
+class SuperSaaSStateIn(BaseModel):
+    plans: Optional[List[Dict[str, Any]]] = None
+    saas_global: Optional[Dict[str, Any]] = None
+    church_subscriptions: Optional[List[Dict[str, Any]]] = None
+
+
+class SuperUserPasswordResetIn(BaseModel):
+    church_code: str
+    phone: str
+    new_password: str
+
+
+class ChurchBillingUpsertIn(BaseModel):
+    subscription: Dict[str, Any] = Field(default_factory=dict)
+
 # ---------------------------
 # Endpoints
 # ---------------------------
@@ -1035,23 +1184,23 @@ def super_login(body: SuperLoginIn):
     audit(None, None, "super_login", {"phone": body.phone})
     return {"ok": True, "role": "SUPER_ADMIN", "token": token}
 
-@app.post("/super/church/create")
-def super_create_church(body: CreateChurchIn, Authorization: Optional[str] = Header(default=None)):
-    ctx = actor_context(Authorization)
-    if ctx["role"] != "SUPER_ADMIN":
-        raise HTTPException(status_code=403, detail="Forbidden")
-
+def db_create_church_with_pasteur(body: CreateChurchIn) -> Dict[str, Any]:
     church_code = body.church_code.strip()
     name = body.name.strip()
+    phone_norm = normalize_phone_rd_congo(body.pasteur_phone.strip())
+    full_name = body.pasteur_full_name.strip()
+    pw = body.pasteur_password.strip()
+    if len(pw) < 4:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court")
 
     conn = db()
     cur = conn.cursor()
     try:
         cur.execute(
             "INSERT INTO churches(church_code, name, is_suspended, suspend_reason, created_at) VALUES(?,?,?,?,?)",
-            (church_code, name, 0, "", now_ts())
+            (church_code, name, 0, "", now_ts()),
         )
-        church_id = cur.lastrowid
+        church_id = int(cur.lastrowid)
     except sqlite3.IntegrityError:
         conn.close()
         raise HTTPException(status_code=409, detail="Church code already exists")
@@ -1065,21 +1214,43 @@ def super_create_church(body: CreateChurchIn, Authorization: Optional[str] = Hea
         "VALUES(?,?,?,?,?,?,?,?,?)",
         (
             church_id,
-            body.pasteur_phone.strip(),
-            body.pasteur_full_name.strip(),
-            hash_pw(body.pasteur_password.strip()),
+            phone_norm,
+            full_name,
+            hash_pw(pw),
             role,
             0,
             json.dumps(perms),
             None,
-            now_ts()
-        )
+            now_ts(),
+        ),
     )
 
     conn.commit()
     conn.close()
-    audit(church_id, 0, "super_church_create", {"church_code": church_code, "name": name})
-    return {"ok": True, "church_code": church_code, "church_name": name, "pasteur_role": role}
+    return {
+        "church_id": church_id,
+        "church_code": church_code,
+        "church_name": name,
+        "pasteur_role": role,
+    }
+
+
+@app.post("/super/church/create")
+def super_create_church(body: CreateChurchIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    out = db_create_church_with_pasteur(body)
+    audit(int(out["church_id"]), 0, "super_church_create", {"church_code": out["church_code"], "name": out["church_name"]})
+    return {"ok": True, "church_code": out["church_code"], "church_name": out["church_name"], "pasteur_role": out["pasteur_role"]}
+
+
+@app.post("/public/church/trial_create")
+def public_church_trial_create(body: CreateChurchIn):
+    out = db_create_church_with_pasteur(body)
+    audit(int(out["church_id"]), None, "public_trial_church_create", {"church_code": out["church_code"], "name": out["church_name"]})
+    return {"ok": True, "church_code": out["church_code"], "church_name": out["church_name"], "pasteur_role": out["pasteur_role"]}
 
 @app.post("/super/church/suspend")
 def super_suspend_church(body: SuspendChurchIn, Authorization: Optional[str] = Header(default=None)):
@@ -1256,8 +1427,7 @@ def api_eglise_me(authorization: Optional[str] = Header(default=None)):
 @app.post("/church/users/create")
 def church_create_user(body: CreateUserIn, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
-    if ctx["role"] != "PASTEUR_RESPONSABLE":
-        raise HTTPException(status_code=403, detail="Seul le pasteur responsable peut créer des comptes.")
+    require_perm(ctx, "users.create")
 
     church_id = int(ctx["church_id"])
     role_new = body.role.upper()
@@ -1268,6 +1438,7 @@ def church_create_user(body: CreateUserIn, Authorization: Optional[str] = Header
     conn = db()
     cur = conn.cursor()
     phone_norm = normalize_phone_rd_congo(body.phone.strip())
+    display_name = (body.full_name or "").strip() or phone_norm
     try:
         cur.execute(
             "INSERT INTO users(church_id, phone, full_name, password_hash, role, is_disabled, permissions_json, member_number, created_at) "
@@ -1275,7 +1446,7 @@ def church_create_user(body: CreateUserIn, Authorization: Optional[str] = Header
             (
                 church_id,
                 phone_norm,
-                body.full_name.strip(),
+                display_name,
                 hash_pw(body.password.strip()),
                 role_new,
                 0,
@@ -1298,8 +1469,7 @@ def church_create_user(body: CreateUserIn, Authorization: Optional[str] = Header
 @app.post("/church/users/disable")
 def church_disable_user(body: DisableUserIn, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
-    if ctx["role"] != "PASTEUR_RESPONSABLE":
-        raise HTTPException(status_code=403, detail="Seul le pasteur responsable peut désactiver un compte.")
+    require_perm(ctx, "users.disable")
 
     church_id = int(ctx["church_id"])
     conn = db()
@@ -1316,8 +1486,7 @@ def church_disable_user(body: DisableUserIn, Authorization: Optional[str] = Head
 @app.post("/church/users/permissions/assign")
 def church_assign_user_permissions(body: AssignUserPermsIn, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
-    if ctx["role"] != "PASTEUR_RESPONSABLE":
-        raise HTTPException(status_code=403, detail="Seul le pasteur responsable peut attribuer/retirer des permissions.")
+    require_perm(ctx, "permissions.assign")
 
     church_id = int(ctx["church_id"])
     perms = list(sorted(set(body.permissions)))
@@ -1558,6 +1727,416 @@ def delete_member(body: MemberDeleteIn, Authorization: Optional[str] = Header(de
     conn.close()
     audit(church_id, ctx["user_id"], "member_delete", {"member_number": body.member_number})
     return {"ok": True, "member_number": body.member_number}
+
+@app.get("/church/relations/list")
+def list_pastoral_relations(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "relations.read")
+    church_id = int(ctx["church_id"])
+
+    conn = db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT payload_json FROM pastoral_relations WHERE church_id=? ORDER BY updated_at DESC",
+        (church_id,),
+    ).fetchall()
+    conn.close()
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            out.append(json.loads(r["payload_json"]))
+        except Exception:
+            pass
+    return {"ok": True, "relations": out}
+
+@app.post("/church/relations/sync")
+def sync_pastoral_relations(body: PastoralRelationsSyncIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "relations.write")
+    church_id = int(ctx["church_id"])
+    ts = now_ts()
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM pastoral_relations WHERE church_id=?", (church_id,))
+    n = 0
+    for rel in body.relations:
+        rel_id = str(rel.get("id") or "").strip()
+        if not rel_id:
+            continue
+        cur.execute(
+            "INSERT INTO pastoral_relations(church_id, relation_id, payload_json, updated_at) VALUES(?,?,?,?)",
+            (church_id, rel_id, json.dumps(rel, ensure_ascii=False), ts),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+
+    audit(church_id, ctx["user_id"], "relations_sync", {"count": n})
+    return {"ok": True, "count": n}
+
+@app.get("/public/churches/list")
+def public_churches_list():
+    conn = db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT church_code, name, is_suspended FROM churches ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "churches": [
+            {"church_code": r["church_code"], "name": r["name"], "is_suspended": int(r["is_suspended"] or 0)}
+            for r in rows
+        ],
+    }
+
+@app.get("/super/churches/list")
+def super_churches_list(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    conn = db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, church_code, name, is_suspended, suspend_reason, created_at FROM churches ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "churches": [dict(r) for r in rows]}
+
+@app.get("/super/saas/state")
+def super_saas_state_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    plans = platform_kv_get("saas_plans")
+    gl = platform_kv_get("saas_global")
+    subs = platform_kv_get("saas_church_subscriptions")
+    return {
+        "ok": True,
+        "plans": plans.get("items", []) if plans else [],
+        "saas_global": gl or {},
+        "church_subscriptions": subs.get("items", []) if subs else [],
+    }
+
+@app.post("/super/saas/state")
+def super_saas_state_set(body: SuperSaaSStateIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if body.plans is not None:
+        platform_kv_set("saas_plans", {"items": body.plans})
+    if body.saas_global is not None:
+        platform_kv_set("saas_global", body.saas_global)
+    if body.church_subscriptions is not None:
+        platform_kv_set("saas_church_subscriptions", {"items": body.church_subscriptions})
+    audit(None, None, "super_saas_state", {})
+    return {"ok": True}
+
+@app.get("/church/users/list")
+def church_users_list(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "users.read")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, phone, full_name, role, is_disabled, permissions_json, member_number, created_at FROM users WHERE church_id=? ORDER BY id",
+        (church_id,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["permissions"] = json.loads(d.pop("permissions_json") or "[]")
+        out.append(d)
+    return {"ok": True, "users": out}
+
+@app.post("/church/users/password_reset")
+def church_user_password_reset(body: UserPasswordResetIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "users.create")
+    church_id = int(ctx["church_id"])
+    pw = body.new_password.strip()
+    if len(pw) < 4:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court")
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET password_hash=? WHERE id=? AND church_id=?",
+        (hash_pw(pw), body.user_id, church_id),
+    )
+    if cur.rowcount < 1:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    conn.commit()
+    conn.close()
+    audit(church_id, ctx["user_id"], "user_password_reset", {"user_id": body.user_id})
+    return {"ok": True, "user_id": body.user_id}
+
+
+@app.post("/super/users/password_reset")
+def super_user_password_reset(body: SuperUserPasswordResetIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    pw = body.new_password.strip()
+    if len(pw) < 4:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court")
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT id FROM churches WHERE church_code=?", (body.church_code.strip(),)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Église introuvable")
+    church_id = int(row["id"])
+    phone_norm = normalize_phone_rd_congo(body.phone.strip())
+    cur.execute(
+        "UPDATE users SET password_hash=? WHERE church_id=? AND phone=?",
+        (hash_pw(pw), church_id, phone_norm),
+    )
+    if cur.rowcount < 1:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    conn.commit()
+    conn.close()
+    audit(church_id, None, "super_user_password_reset", {"phone": phone_norm})
+    return {"ok": True, "church_code": body.church_code.strip(), "phone": phone_norm}
+
+
+@app.get("/church/billing/subscription")
+def church_billing_subscription_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    plans_blob = platform_kv_get("saas_plans") or {}
+    plan_items = plans_blob.get("items", []) if isinstance(plans_blob, dict) else []
+    if ctx["role"] == "SUPER_ADMIN":
+        return {"ok": True, "subscription": None, "plans": plan_items}
+    require_perm(ctx, "church.read")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT church_code, name FROM churches WHERE id=?", (church_id,)).fetchone()
+    conn.close()
+    if not row:
+        return {"ok": True, "subscription": None, "plans": plan_items}
+    cc = str(row["church_code"] or "").strip().upper()
+    subs = platform_kv_get("saas_church_subscriptions") or {}
+    items = subs.get("items", []) if isinstance(subs, dict) else []
+    match = None
+    for it in items:
+        if str(it.get("churchCode", "")).strip().upper() == cc:
+            match = it
+            break
+    return {"ok": True, "subscription": match, "plans": plan_items}
+
+
+@app.post("/church/billing/subscription")
+def church_billing_subscription_set(body: ChurchBillingUpsertIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] == "SUPER_ADMIN":
+        raise HTTPException(status_code=400, detail="Utiliser /super/saas/state pour le super admin")
+    require_perm(ctx, "members.update")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT church_code, name FROM churches WHERE id=?", (church_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Église introuvable")
+    cc = str(row["church_code"] or "").strip()
+    church_name = str(row["name"] or "").strip()
+    sub = dict(body.subscription or {})
+    sub["churchCode"] = cc
+    if not str(sub.get("churchName") or "").strip():
+        sub["churchName"] = church_name
+    subs = platform_kv_get("saas_church_subscriptions") or {"items": []}
+    items = list(subs.get("items", [])) if isinstance(subs, dict) else []
+    replaced = False
+    cc_up = cc.upper()
+    for i, it in enumerate(items):
+        if str(it.get("churchCode", "")).strip().upper() == cc_up:
+            merged = dict(it) if isinstance(it, dict) else {}
+            merged.update(sub)
+            items[i] = merged
+            replaced = True
+            break
+    if not replaced:
+        items.append(sub)
+    platform_kv_set("saas_church_subscriptions", {"items": items})
+    audit(church_id, ctx["user_id"], "church_billing_subscription_set", {"church_code": cc})
+    return {"ok": True}
+
+
+@app.get("/church/documents/member_groups")
+def church_doc_member_groups_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "programs.read")
+    church_id = int(ctx["church_id"])
+    data = church_document_get(church_id, "member_groups")
+    return {"ok": True, "payload": data}
+
+@app.post("/church/documents/member_groups")
+def church_doc_member_groups_set(body: ChurchDocumentSyncIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "programs.write")
+    church_id = int(ctx["church_id"])
+    church_document_set(church_id, "member_groups", body.payload)
+    audit(church_id, ctx["user_id"], "doc_member_groups", {})
+    return {"ok": True}
+
+@app.get("/church/documents/irregulars")
+def church_doc_irregulars_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "members.read")
+    church_id = int(ctx["church_id"])
+    return {"ok": True, "payload": church_document_get(church_id, "irregulars")}
+
+@app.post("/church/documents/irregulars")
+def church_doc_irregulars_set(body: ChurchDocumentSyncIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "members.update")
+    church_id = int(ctx["church_id"])
+    church_document_set(church_id, "irregulars", body.payload)
+    audit(church_id, ctx["user_id"], "doc_irregulars", {})
+    return {"ok": True}
+
+@app.get("/church/documents/secretariat")
+def church_doc_secretariat_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "members.read")
+    church_id = int(ctx["church_id"])
+    return {"ok": True, "payload": church_document_get(church_id, "secretariat")}
+
+@app.post("/church/documents/secretariat")
+def church_doc_secretariat_set(body: ChurchDocumentSyncIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "members.update")
+    church_id = int(ctx["church_id"])
+    church_document_set(church_id, "secretariat", body.payload)
+    audit(church_id, ctx["user_id"], "doc_secretariat", {})
+    return {"ok": True}
+
+@app.get("/church/role_policy")
+def church_role_policy_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "church.read")
+    church_id = int(ctx["church_id"])
+    return {"ok": True, "policy": church_document_get(church_id, "role_policy")}
+
+@app.post("/church/role_policy")
+def church_role_policy_set(body: ChurchDocumentSyncIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "permissions.assign")
+    church_id = int(ctx["church_id"])
+    church_document_set(church_id, "role_policy", body.payload)
+    audit(church_id, ctx["user_id"], "role_policy_set", {})
+    return {"ok": True}
+
+@app.get("/church/feed/list")
+def church_feed_list(kind: Optional[str] = None, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "announcements.read")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    if kind and kind.strip().lower() in ("announcement", "message"):
+        rows = cur.execute(
+            "SELECT * FROM church_feed_items WHERE church_id=? AND kind=? ORDER BY created_at DESC",
+            (church_id, kind.strip().lower()),
+        ).fetchall()
+    else:
+        rows = cur.execute(
+            "SELECT * FROM church_feed_items WHERE church_id=? ORDER BY created_at DESC",
+            (church_id,),
+        ).fetchall()
+    conn.close()
+    return {"ok": True, "items": [dict(r) for r in rows]}
+
+@app.post("/church/feed/create")
+def church_feed_create(body: FeedCreateIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "announcements.write")
+    church_id = int(ctx["church_id"])
+    k = body.kind.strip().lower()
+    if k not in ("announcement", "message"):
+        raise HTTPException(status_code=400, detail="kind invalide")
+    fid = secrets.token_hex(12)
+    ts = now_ts()
+    phone_ctx = ""
+    conn = db()
+    cur = conn.cursor()
+    u = cur.execute("SELECT phone FROM users WHERE id=?", (ctx["user_id"],)).fetchone()
+    if u:
+        phone_ctx = (u["phone"] or "").strip()
+    cur.execute(
+        "INSERT INTO church_feed_items(id, church_id, kind, body, audience, sender_phone, created_at) VALUES(?,?,?,?,?,?,?)",
+        (fid, church_id, k, body.body.strip(), body.audience.strip(), phone_ctx, ts),
+    )
+    nid = secrets.token_hex(10)
+    title = "Nouvelle annonce" if k == "announcement" else "Nouveau message"
+    cur.execute(
+        "INSERT INTO church_notifications(id, church_id, target, title, body, sender_phone, created_at, read_phones_json) VALUES(?,?,?,?,?,?,?,?)",
+        (nid, church_id, body.audience.strip(), title, body.body.strip()[:2000], phone_ctx, ts, "[]"),
+    )
+    conn.commit()
+    conn.close()
+    audit(church_id, ctx["user_id"], "feed_create", {"kind": k, "id": fid})
+    return {"ok": True, "id": fid, "notification_id": nid}
+
+@app.get("/church/notifications/list")
+def church_notifications_list(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "me.notifications.read")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT * FROM church_notifications WHERE church_id=? ORDER BY created_at DESC LIMIT 500",
+        (church_id,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["readByPhones"] = json.loads(d.pop("read_phones_json") or "[]")
+        except Exception:
+            d["readByPhones"] = []
+        out.append(d)
+    return {"ok": True, "notifications": out}
+
+@app.post("/church/notifications/mark_read")
+def church_notifications_mark_read(body: NotificationMarkReadIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "me.notifications.read")
+    church_id = int(ctx["church_id"])
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT read_phones_json FROM church_notifications WHERE id=? AND church_id=?",
+        (body.notification_id.strip(), church_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Notification introuvable")
+    u = cur.execute("SELECT phone FROM users WHERE id=?", (ctx["user_id"],)).fetchone()
+    phone = (u["phone"] or "").strip() if u else ""
+    try:
+        cur_list = json.loads(row["read_phones_json"] or "[]")
+        if not isinstance(cur_list, list):
+            cur_list = []
+    except Exception:
+        cur_list = []
+    if phone and phone not in cur_list:
+        cur_list.append(phone)
+    cur.execute(
+        "UPDATE church_notifications SET read_phones_json=? WHERE id=? AND church_id=?",
+        (json.dumps(cur_list), body.notification_id.strip(), church_id),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 @app.post("/church/donations/create")
 def create_donation(body: DonationCreateIn, Authorization: Optional[str] = Header(default=None)):

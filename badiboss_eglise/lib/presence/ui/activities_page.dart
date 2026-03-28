@@ -9,7 +9,6 @@ import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
 import '../models/activity.dart';
-import '../stores/activities_store.dart';
 import '../../core/config.dart';
 import '../../services/church_service.dart';
 
@@ -97,14 +96,13 @@ final class _ActivitiesPageState extends State<ActivitiesPage> {
         _status = '';
       });
       await _loadOpenPresenceSummaries();
-    } catch (_) {
-      // fallback local
-      final list = await const ActivitiesStore().load(cc);
+    } catch (e) {
       if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
       setState(() {
-        _items = list;
+        _items = <Activity>[];
         _openPresenceSummary = <String, String>{};
-        _status = 'API indisponible : activités locales affichées.';
+        _status = 'Erreur serveur: $msg';
       });
     }
   }
@@ -157,11 +155,6 @@ final class _ActivitiesPageState extends State<ActivitiesPage> {
     if (mounted) setState(() => _openPresenceSummary = next);
   }
 
-  String _newId() {
-    final ms = DateTime.now().millisecondsSinceEpoch;
-    return 'act_$ms';
-  }
-
   Future<void> _create() async {
     final cc = _effectiveChurchCode();
     final s = _session;
@@ -186,21 +179,9 @@ final class _ActivitiesPageState extends State<ActivitiesPage> {
       await _createEventApi(token: s.token, title: title, eventDate: _today(), eventType: type);
       _titleCtrl.clear();
       await _reload();
-    } catch (_) {
-      // fallback local
-      final a = Activity(
-        id: _newId(),
-        churchCode: cc,
-        title: title,
-        type: type,
-        status: ActivityStatus.open,
-        createdByPhone: s.phone,
-        startedAt: DateTime.now(),
-        closedAt: null,
-      );
-      await const ActivitiesStore().upsert(a);
-      _titleCtrl.clear();
-      await _reload();
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
+      if (mounted) setState(() => _status = msg);
     }
   }
 
@@ -209,9 +190,10 @@ final class _ActivitiesPageState extends State<ActivitiesPage> {
       final s = _session;
       if (s == null) return;
       await _closeEventApi(token: s.token, eventId: int.parse(a.id), closed: true);
-    } catch (_) {
-      final closed = a.copyWith(status: ActivityStatus.closed, closedAt: DateTime.now());
-      await const ActivitiesStore().upsert(closed);
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
+      if (mounted) setState(() => _status = msg);
+      return;
     }
     await _reload();
   }
@@ -221,9 +203,10 @@ final class _ActivitiesPageState extends State<ActivitiesPage> {
       final s = _session;
       if (s == null) return;
       await _closeEventApi(token: s.token, eventId: int.parse(a.id), closed: false);
-    } catch (_) {
-      final opened = a.copyWith(status: ActivityStatus.open, closedAt: null);
-      await const ActivitiesStore().upsert(opened);
+    } catch (e) {
+      final msg = e is StateError ? e.message : e.toString();
+      if (mounted) setState(() => _status = msg);
+      return;
     }
     await _reload();
   }

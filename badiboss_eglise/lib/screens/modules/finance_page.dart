@@ -11,7 +11,6 @@ import '../../auth/stores/session_store.dart';
 import '../../core/config.dart';
 import '../../services/export_file_service.dart';
 import '../../services/church_service.dart';
-import '../../services/local_members_store.dart';
 import '../../models/member.dart';
 import '../../widgets/member_picker_dialog.dart';
 import '../../widgets/scroll_edge_fabs.dart';
@@ -522,9 +521,8 @@ final class _FinancePageState extends State<FinancePage> {
       if (!mounted) return;
       setState(() => _members = list);
     } catch (_) {
-      final local = await LocalMembersStore.loadByChurch(cc);
       if (!mounted) return;
-      setState(() => _members = local);
+      setState(() => _members = <Member>[]);
     }
   }
 
