@@ -2139,7 +2139,7 @@ def update_member_fields(body: MemberUpdateIn, Authorization: Optional[str] = He
     conn.commit()
     conn.close()
     audit(church_id, ctx["user_id"], "member_update", {"member_number": mn})
-    if role_backend and u and old_backend_role and role_backend != old_backend_role:
+    if role_backend and u and role_backend != (old_backend_role or ""):
         try:
             notify_member_number(
                 church_id,
