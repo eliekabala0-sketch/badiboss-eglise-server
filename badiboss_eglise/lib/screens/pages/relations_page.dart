@@ -123,6 +123,19 @@ class _RelationsPageState extends State<RelationsPage> {
   }
 
   Future<void> _addOrEdit({_RelationItem? existing}) async {
+    final activeByMember = _activeOpenRelationByMember(excludeRelationId: existing?.id);
+    final blockedReasons = <String, String>{};
+    for (final m in _members) {
+      if (m.maritalStatus == MaritalStatus.married) {
+        blockedReasons[m.id] = '${m.fullName} est déjà marié(e).';
+        continue;
+      }
+      final rel = activeByMember[m.id];
+      if (rel != null) {
+        final partner = rel.memberCodeA == m.id ? rel.personB : rel.personA;
+        blockedReasons[m.id] = '${m.fullName} est déjà en relation active avec $partner.';
+      }
+    }
     String typeA = existing?.isMemberA == true ? 'member' : 'external';
     String typeB = existing?.isMemberB == true ? 'member' : 'external';
     Member? selectedA = _members.where((m) => m.id == existing?.memberCodeA).cast<Member?>().isEmpty
@@ -169,7 +182,11 @@ class _RelationsPageState extends State<RelationsPage> {
                   subtitle: const Text('Filtrer par nom, code membre ou téléphone'),
                   trailing: const Icon(Icons.search),
                   onTap: () async {
-                    final picked = await _pickMemberFromList(gender: Sex.male);
+                    final picked = await _pickMemberFromList(
+                      gender: Sex.male,
+                      blockedReasons: blockedReasons,
+                      currentMemberId: selectedA?.id,
+                    );
                     if (picked == null) return;
                     setLocal(() {
                       selectedA = picked;
@@ -213,7 +230,11 @@ class _RelationsPageState extends State<RelationsPage> {
                   subtitle: const Text('Filtrer par nom, code membre ou téléphone'),
                   trailing: const Icon(Icons.search),
                   onTap: () async {
-                    final picked = await _pickMemberFromList(gender: Sex.female);
+                    final picked = await _pickMemberFromList(
+                      gender: Sex.female,
+                      blockedReasons: blockedReasons,
+                      currentMemberId: selectedB?.id,
+                    );
                     if (picked == null) return;
                     setLocal(() {
                       selectedB = picked;
@@ -311,18 +332,56 @@ class _RelationsPageState extends State<RelationsPage> {
       }
       return;
     }
+    final rdv = appointment.text.trim();
+    if (rdv.isNotEmpty) {
+      final dt = _parseFlexibleDate(rdv);
+      if (dt == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Date RDV invalide. Format attendu: YYYY-MM-DD ou YYYY-MM-DD HH:mm.')),
+          );
+        }
+        return;
+      }
+      final now = DateTime.now();
+      final nowNoSec = DateTime(now.year, now.month, now.day, now.hour, now.minute);
+      if (dt.isBefore(nowNoSec)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Le rendez-vous ne peut pas être dans le passé.')),
+          );
+        }
+        return;
+      }
+    }
 
-    final conflict = _items.any((x) =>
-        x.id != existing?.id &&
-        x.isOpen &&
-        (x.personA.toLowerCase() == a.toLowerCase() ||
-            x.personB.toLowerCase() == a.toLowerCase() ||
-            x.personA.toLowerCase() == b.toLowerCase() ||
-            x.personB.toLowerCase() == b.toLowerCase()));
-    if (conflict) {
+    _RelationItem? conflict;
+    for (final x in _items) {
+      if (x.id == existing?.id || !x.isOpen) continue;
+      final idA = selectedA?.id ?? '';
+      final idB = selectedB?.id ?? '';
+      final byMemberId =
+          (idA.isNotEmpty && (x.memberCodeA == idA || x.memberCodeB == idA)) ||
+          (idB.isNotEmpty && (x.memberCodeA == idB || x.memberCodeB == idB));
+      final byName =
+          x.personA.toLowerCase() == a.toLowerCase() ||
+          x.personB.toLowerCase() == a.toLowerCase() ||
+          x.personA.toLowerCase() == b.toLowerCase() ||
+          x.personB.toLowerCase() == b.toLowerCase();
+      if (byMemberId || byName) {
+        conflict = x;
+        break;
+      }
+    }
+    if (conflict != null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Conflit: une des personnes est déjà engagée dans une relation non finalisée.')),
+        SnackBar(
+          content: Text(
+            'Conflit: relation active existante ${conflict.personA} + ${conflict.personB}. '
+            'Finalisez/interrompez-la avant une nouvelle création.',
+          ),
+        ),
       );
       return;
     }
@@ -375,6 +434,21 @@ class _RelationsPageState extends State<RelationsPage> {
   }
 
   Future<void> _close(_RelationItem item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirmation de finalisation'),
+        content: Text(
+          'Vous allez finaliser/interrompre la relation:\n${item.personA} + ${item.personB}\n\n'
+          'Cette action bloque toute suppression accidentelle en un clic.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirmer')),
+        ],
+      ),
+    );
+    if (ok != true) return;
     setState(() {
       item.isOpen = false;
       item.history.add('Finalisée ${DateTime.now().toIso8601String()}');
@@ -512,7 +586,11 @@ class _RelationsPageState extends State<RelationsPage> {
 }
 
 extension on _RelationsPageState {
-  Future<Member?> _pickMemberFromList({required Sex gender}) async {
+  Future<Member?> _pickMemberFromList({
+    required Sex gender,
+    required Map<String, String> blockedReasons,
+    String? currentMemberId,
+  }) async {
     String q = '';
     final screenH = MediaQuery.of(context).size.height;
     final filteredBase = _members.where((m) => m.sex == gender).toList();
@@ -545,11 +623,16 @@ extension on _RelationsPageState {
                             itemCount: filtered.length,
                             itemBuilder: (_, i) {
                               final m = filtered[i];
+                              final blocked = blockedReasons[m.id];
+                              final canUse = blocked == null || m.id == (currentMemberId ?? '');
                               return ListTile(
                                 dense: true,
                                 title: Text('${m.id} • ${m.fullName}'),
-                                subtitle: Text(m.phone),
-                                onTap: () => Navigator.pop(ctx, m),
+                                subtitle: Text(
+                                  blocked == null ? m.phone : '$blocked • ${m.phone}',
+                                ),
+                                enabled: canUse,
+                                onTap: canUse ? () => Navigator.pop(ctx, m) : null,
                               );
                             },
                           ),
@@ -564,6 +647,31 @@ extension on _RelationsPageState {
         },
       ),
     );
+  }
+
+  Map<String, _RelationItem> _activeOpenRelationByMember({String? excludeRelationId}) {
+    final out = <String, _RelationItem>{};
+    for (final x in _items) {
+      if (!x.isOpen || x.id == excludeRelationId) continue;
+      if (x.memberCodeA.trim().isNotEmpty) out[x.memberCodeA.trim()] = x;
+      if (x.memberCodeB.trim().isNotEmpty) out[x.memberCodeB.trim()] = x;
+    }
+    return out;
+  }
+
+  DateTime? _parseFlexibleDate(String raw) {
+    final v = raw.trim();
+    final d = DateTime.tryParse(v);
+    if (d != null) return DateTime(d.year, d.month, d.day, d.hour, d.minute);
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(v);
+    if (m == null) return null;
+    final y = int.parse(m.group(1)!);
+    final mo = int.parse(m.group(2)!);
+    final da = int.parse(m.group(3)!);
+    final parsed = DateTime.tryParse('$y-${mo.toString().padLeft(2, '0')}-${da.toString().padLeft(2, '0')}T00:00:00');
+    if (parsed == null) return null;
+    if (parsed.year != y || parsed.month != mo || parsed.day != da) return null;
+    return parsed;
   }
 }
 

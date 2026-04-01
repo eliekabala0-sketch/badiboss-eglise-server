@@ -319,20 +319,14 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
     if (_members.isEmpty) {
       _members = await const MemberDirectoryService().loadMembersForActiveChurch();
     }
-    final byCategory = <String, List<Member>>{};
-    for (final m in _members) {
-      final cat = m.role.trim().isEmpty ? 'autres' : m.role.trim().toLowerCase();
-      byCategory.putIfAbsent(cat, () => <Member>[]).add(m);
-    }
     String selectedCategory = 'all';
+    final communes = _members.map((m) => m.commune.trim()).where((v) => v.isNotEmpty).toSet().toList()..sort();
+    final quartiers = _members.map((m) => m.quartier.trim()).where((v) => v.isNotEmpty).toSet().toList()..sort();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) {
-          final visible = selectedCategory == 'all'
-              ? _members
-              : (byCategory[selectedCategory] ?? <Member>[]);
-          final categoryKeys = byCategory.keys.toList()..sort();
+          final visible = _members.where((m) => _matchesGroupFilter(m, selectedCategory)).toList();
           return AlertDialog(
             title: Text('Membres du groupe: ${g.name}'),
             content: SizedBox(
@@ -345,7 +339,16 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                     decoration: const InputDecoration(labelText: 'Filtrer catégorie / critère'),
                     items: [
                       const DropdownMenuItem(value: 'all', child: Text('Tous')),
-                      ...categoryKeys.map((k) => DropdownMenuItem(value: k, child: Text(k))),
+                      const DropdownMenuItem(value: 'male', child: Text('Hommes')),
+                      const DropdownMenuItem(value: 'female', child: Text('Femmes')),
+                      const DropdownMenuItem(value: 'married', child: Text('Mariés')),
+                      const DropdownMenuItem(value: 'single', child: Text('Célibataires')),
+                      const DropdownMenuItem(value: 'papas', child: Text('Papas')),
+                      const DropdownMenuItem(value: 'mamans', child: Text('Mamans')),
+                      const DropdownMenuItem(value: 'jeunes', child: Text('Jeunes')),
+                      const DropdownMenuItem(value: 'enfants', child: Text('Enfants')),
+                      ...communes.map((k) => DropdownMenuItem(value: 'commune:$k', child: Text('Commune: $k'))),
+                      ...quartiers.map((k) => DropdownMenuItem(value: 'quartier:$k', child: Text('Quartier: $k'))),
                     ],
                     onChanged: (v) => setLocal(() => selectedCategory = v ?? 'all'),
                   ),
@@ -360,7 +363,9 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                         return CheckboxListTile(
                           value: inGroup,
                           title: Text('${m.id} • ${m.fullName}'),
-                          subtitle: Text('${m.phone} • ${m.role}'),
+                          subtitle: Text(
+                            '${m.phone} • ${sexToString(m.sex)} • ${maritalToString(m.maritalStatus)} • ${m.commune}',
+                          ),
                           onChanged: (v) {
                             final idx = _groups.indexWhere((x) => x.id == g.id);
                             if (idx < 0) return;
@@ -403,6 +408,40 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
       if (m.phone.trim() == p) return m;
     }
     return null;
+  }
+
+  bool _matchesGroupFilter(Member m, String selectedCategory) {
+    if (selectedCategory == 'all') return true;
+    if (selectedCategory == 'male') return m.sex == Sex.male;
+    if (selectedCategory == 'female') return m.sex == Sex.female;
+    if (selectedCategory == 'married') return m.maritalStatus == MaritalStatus.married;
+    if (selectedCategory == 'single') return m.maritalStatus == MaritalStatus.single;
+    if (selectedCategory == 'papas') return m.sex == Sex.male && m.maritalStatus == MaritalStatus.married;
+    if (selectedCategory == 'mamans') return m.sex == Sex.female && m.maritalStatus == MaritalStatus.married;
+    if (selectedCategory == 'jeunes') {
+      final age = _ageFromIso(m.birthDateIso);
+      return age != null && age >= 13 && age <= 35;
+    }
+    if (selectedCategory == 'enfants') {
+      final age = _ageFromIso(m.birthDateIso);
+      return age != null && age < 13;
+    }
+    if (selectedCategory.startsWith('commune:')) {
+      return m.commune.trim().toLowerCase() == selectedCategory.substring(8).trim().toLowerCase();
+    }
+    if (selectedCategory.startsWith('quartier:')) {
+      return m.quartier.trim().toLowerCase() == selectedCategory.substring(9).trim().toLowerCase();
+    }
+    return true;
+  }
+
+  int? _ageFromIso(String iso) {
+    final d = DateTime.tryParse(iso);
+    if (d == null) return null;
+    final now = DateTime.now();
+    var age = now.year - d.year;
+    if (now.month < d.month || (now.month == d.month && now.day < d.day)) age--;
+    return age;
   }
 }
 

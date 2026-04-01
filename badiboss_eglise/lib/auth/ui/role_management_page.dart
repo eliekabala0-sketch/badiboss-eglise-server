@@ -60,7 +60,16 @@ final class _RoleManagementPageState extends State<RoleManagementPage> {
     if (cc == null) return;
 
     final p = await RolePolicyStore.read(cc);
-    setState(() => _policy = p);
+    setState(() {
+      _policy = p;
+      if (_selectedExistingRole == null || !_policy.rolePermissions.containsKey(_selectedExistingRole)) {
+        final keys = _policy.rolePermissions.keys.toList()..sort();
+        if (keys.isNotEmpty) {
+          _selectedExistingRole = keys.first;
+          _selectedPerms = Set<String>.from(_policy.permissionsOf(keys.first));
+        }
+      }
+    });
   }
 
   String? _resolveChurchCode() {

@@ -55,7 +55,6 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
       if (churchCode.isEmpty) {
         churchCode = (s?.churchCode ?? '').trim();
       }
-      final token = (s?.token ?? '').trim();
 
       if (churchCode.isEmpty) {
         setState(() {
@@ -153,17 +152,16 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
         createdAt: DateTime.now(),
       );
 
-      if (token.isEmpty) throw StateError('token manquant');
-      final uri = Uri.parse('${Config.baseUrl}/church/members/create');
+      final uri = Uri.parse('${Config.baseUrl}/public/members/self_register');
       final res = await http
           .post(
             uri,
             headers: {
               'accept': 'application/json',
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
             },
             body: jsonEncode({
+              'church_code': churchCode,
               'full_name': m.fullName,
               'phone': m.phone,
               'sex': sexToString(_sex),
@@ -178,14 +176,20 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
               'neighborhood': '',
               'region': '',
               'province': '',
-              'create_account': false,
               'password': pw,
             }),
           )
           .timeout(Duration(seconds: Config.timeoutSeconds));
 
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw StateError(res.body);
+        String msg = res.body;
+        try {
+          final dec = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+          if (dec is Map) {
+            msg = (dec['detail'] ?? dec['message'] ?? msg).toString();
+          }
+        } catch (_) {}
+        throw StateError(msg);
       }
 
       MemberListRefresh.bump();

@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../auth/permissions.dart';
 import '../../auth/ui/permission_gate.dart';
+import '../../models/member.dart';
 import '../../services/church_api.dart';
+import '../../services/member_directory_service.dart';
+import '../../widgets/member_picker_dialog.dart';
 import '../../widgets/scroll_edge_fabs.dart';
 
 final class MessagesPage extends StatefulWidget {
@@ -59,6 +62,12 @@ final class _MessagesPageState extends State<MessagesPage> {
   Future<void> _send() async {
     final c = TextEditingController();
     String target = 'all';
+    String targetMode = 'all';
+    Member? targetMember;
+    List<Member> members = const <Member>[];
+    try {
+      members = await const MemberDirectoryService().loadMembersForActiveChurch();
+    } catch (_) {}
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -74,15 +83,39 @@ final class _MessagesPageState extends State<MessagesPage> {
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
-                value: target,
+                value: targetMode,
                 items: const [
                   DropdownMenuItem(value: 'all', child: Text('Toute l\'église')),
                   DropdownMenuItem(value: 'admins', child: Text('Admins')),
-                  DropdownMenuItem(value: 'members', child: Text('Membres')),
+                  DropdownMenuItem(value: 'members', child: Text('Membres (tous)')),
+                  DropdownMenuItem(value: 'member_one', child: Text('Membre précis')),
                 ],
-                onChanged: (v) => setLocal(() => target = v ?? 'all'),
+                onChanged: (v) => setLocal(() {
+                  targetMode = v ?? 'all';
+                  if (targetMode != 'member_one') targetMember = null;
+                }),
                 decoration: const InputDecoration(labelText: 'Destinataires'),
               ),
+              if (targetMode == 'member_one') ...[
+                const SizedBox(height: 8),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    targetMember == null
+                        ? 'Choisir un membre'
+                        : '${targetMember!.id} • ${targetMember!.fullName}',
+                  ),
+                  subtitle: Text(targetMember == null ? 'Recherche par nom, code, téléphone' : targetMember!.phone),
+                  trailing: const Icon(Icons.search),
+                  onTap: () async {
+                    final picked = await showMemberPickerDialog(context, members: members, title: 'Destinataire membre');
+                    if (picked != null) {
+                      setLocal(() => targetMember = picked);
+                    }
+                  },
+                ),
+              ],
             ],
           ),
           actions: [
@@ -95,6 +128,8 @@ final class _MessagesPageState extends State<MessagesPage> {
     if (ok != true) return;
     final text = c.text.trim();
     if (text.isEmpty) return;
+    if (targetMode == 'member_one' && targetMember == null) return;
+    target = targetMode == 'member_one' ? 'phone:${targetMember!.phone.trim()}' : targetMode;
     try {
       await ChurchApi.postJson('/church/feed/create', {
         'kind': 'message',

@@ -75,7 +75,8 @@ final class NotificationStore {
             },
           )
           .timeout(Duration(seconds: Config.timeoutSeconds));
-      final dec = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+      final text = res.bodyBytes.isEmpty ? '{}' : utf8.decode(res.bodyBytes);
+      final dec = jsonDecode(text);
       if (dec is! Map || res.statusCode < 200 || res.statusCode >= 300) {
         return <AppNotification>[];
       }

@@ -27,7 +27,8 @@ final class ChurchApi {
       };
 
   static Map<String, dynamic> _decodeMap(http.Response res) {
-    final dec = jsonDecode(res.body.isEmpty ? '{}' : res.body);
+    final text = res.bodyBytes.isEmpty ? '{}' : utf8.decode(res.bodyBytes);
+    final dec = jsonDecode(text);
     if (dec is! Map) throw StateError('Réponse JSON invalide');
     return Map<String, dynamic>.from(dec);
   }

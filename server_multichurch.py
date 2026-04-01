@@ -1048,6 +1048,24 @@ class MemberCreateIn(BaseModel):
     account_password: Optional[str] = None
     account_role: str = "MEMBRE"  # MEMBRE ou PROTOCOLE
 
+class PublicMemberSelfRegisterIn(BaseModel):
+    church_code: str
+    full_name: str
+    phone: str
+    sex: str
+    quarter: str
+    category: str = "member"
+    presence_status: str = "unknown"
+    marital_status: str
+    birth_date: Optional[str] = None
+    commune: Optional[str] = ""
+    zone: Optional[str] = ""
+    address_line: Optional[str] = ""
+    neighborhood: Optional[str] = ""
+    region: Optional[str] = ""
+    province: Optional[str] = ""
+    password: str
+
 class MemberValidateIn(BaseModel):
     member_number: str
     validated: bool = True
@@ -1589,6 +1607,87 @@ def create_member(body: MemberCreateIn, Authorization: Optional[str] = Header(de
     audit(church_id, ctx["user_id"], "member_create", {"member_number": member_number, "user_id": user_id})
     return {"ok": True, "member_number": member_number, "user_id": user_id}
 
+@app.post("/public/members/self_register")
+def public_member_self_register(body: PublicMemberSelfRegisterIn):
+    church_code = (body.church_code or "").strip()
+    if church_code == "":
+        raise HTTPException(status_code=400, detail="church_code requis")
+    church_id = resolve_church_id_by_code(church_code)
+    ensure_church_active(church_id)
+    phone_norm = normalize_phone_rd_congo((body.phone or "").strip())
+    if len(phone_norm) != 12 or not phone_norm.startswith("243"):
+        raise HTTPException(status_code=400, detail="Numéro RDC invalide")
+    pw = (body.password or "").strip()
+    if len(pw) < 6:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court (min 6)")
+    full_name = (body.full_name or "").strip()
+    if full_name == "":
+        raise HTTPException(status_code=400, detail="Nom complet requis")
+
+    member_number = next_member_number(church_id)
+    conn = db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """INSERT INTO members(
+               church_id, member_number, full_name, phone, sex, quarter, category, presence_status,
+               marital_status, partner_member_number, is_validated, created_at, birth_date,
+               status, is_deleted, commune, zone, address_line, neighborhood, region, province
+               )
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                church_id, member_number,
+                full_name,
+                phone_norm,
+                (body.sex or "").strip(),
+                (body.quarter or "").strip(),
+                (body.category or "member").strip(),
+                (body.presence_status or "unknown").strip(),
+                (body.marital_status or "").strip(),
+                None,
+                0,
+                now_ts(),
+                (body.birth_date or "").strip(),
+                "pending",
+                0,
+                (body.commune or "").strip(),
+                (body.zone or "").strip(),
+                (body.address_line or "").strip(),
+                (body.neighborhood or "").strip(),
+                (body.region or "").strip(),
+                (body.province or "").strip(),
+            )
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=409, detail="Téléphone déjà utilisé dans cette église")
+
+    try:
+        perms = default_permissions_for_role("MEMBRE")
+        perms = apply_role_restrictions(church_id, "MEMBRE", perms)
+        cur.execute(
+            "INSERT INTO users(church_id, phone, full_name, password_hash, role, is_disabled, permissions_json, member_number, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                church_id,
+                phone_norm,
+                full_name,
+                hash_pw(pw),
+                "MEMBRE",
+                0,
+                json.dumps(perms),
+                member_number,
+                now_ts(),
+            ),
+        )
+        user_id = int(cur.lastrowid)
+    except sqlite3.IntegrityError:
+        user_id = None
+    conn.commit()
+    conn.close()
+    audit(church_id, None, "public_member_self_register", {"member_number": member_number, "user_id": user_id})
+    return {"ok": True, "member_number": member_number, "status": "pending"}
+
 @app.get("/church/members/list")
 def list_members(pending_only: bool = False, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
@@ -1757,8 +1856,73 @@ def sync_pastoral_relations(body: PastoralRelationsSyncIn, Authorization: Option
     church_id = int(ctx["church_id"])
     ts = now_ts()
 
+    def _parse_appointment(v: str) -> Optional[float]:
+        s = (v or "").strip()
+        if s == "":
+            return None
+        s = s.replace(" ", "T")
+        try:
+            dt = time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+            return time.mktime(dt)
+        except Exception:
+            pass
+        try:
+            dt = time.strptime(s[:16], "%Y-%m-%dT%H:%M")
+            return time.mktime(dt)
+        except Exception:
+            pass
+        try:
+            dt = time.strptime(s[:10], "%Y-%m-%d")
+            return time.mktime(dt)
+        except Exception:
+            return None
+
     conn = db()
     cur = conn.cursor()
+    members = cur.execute(
+        "SELECT member_number, full_name, marital_status FROM members WHERE church_id=? AND is_deleted=0",
+        (church_id,),
+    ).fetchall()
+    marital_by_member: Dict[str, str] = {}
+    for m in members:
+        marital_by_member[(m["member_number"] or "").strip()] = (m["marital_status"] or "").strip().lower()
+
+    seen_open: Dict[str, str] = {}
+    now_ts_float = time.time()
+    for rel in body.relations:
+        rel_id = str(rel.get("id") or "").strip()
+        if rel_id == "":
+            continue
+        a = str(rel.get("personA") or "").strip()
+        b = str(rel.get("personB") or "").strip()
+        if a == "" or b == "":
+            conn.close()
+            raise HTTPException(status_code=400, detail="Relation invalide: personnes obligatoires")
+        appointment = str(rel.get("nextAppointment") or "").strip()
+        if appointment != "":
+            ap_ts = _parse_appointment(appointment)
+            if ap_ts is None:
+                conn.close()
+                raise HTTPException(status_code=400, detail=f"Date rendez-vous invalide ({a} + {b})")
+            if ap_ts < (now_ts_float - 60):
+                conn.close()
+                raise HTTPException(status_code=400, detail=f"Rendez-vous passé interdit ({a} + {b})")
+        is_open = bool(rel.get("isOpen") is True)
+        if not is_open:
+            continue
+        for key in ("memberCodeA", "memberCodeB"):
+            mc = str(rel.get(key) or "").strip()
+            if mc == "":
+                continue
+            ms = marital_by_member.get(mc, "")
+            if ms in {"married", "marié", "marie"}:
+                conn.close()
+                raise HTTPException(status_code=409, detail=f"Membre {mc} non éligible: déjà marié")
+            if mc in seen_open:
+                conn.close()
+                raise HTTPException(status_code=409, detail=f"Membre {mc} déjà engagé en relation active")
+            seen_open[mc] = rel_id
+
     cur.execute("DELETE FROM pastoral_relations WHERE church_id=?", (church_id,))
     n = 0
     for rel in body.relations:
@@ -2061,6 +2225,30 @@ def church_feed_create(body: FeedCreateIn, Authorization: Optional[str] = Header
     k = body.kind.strip().lower()
     if k not in ("announcement", "message"):
         raise HTTPException(status_code=400, detail="kind invalide")
+    audience_raw = (body.audience or "all").strip()
+    audience_final = audience_raw
+    if audience_raw in {"all", "admins", "members"}:
+        audience_final = audience_raw
+    elif audience_raw.startswith("phone:"):
+        p = normalize_phone_rd_congo(audience_raw.split(":", 1)[1].strip())
+        if p == "":
+            raise HTTPException(status_code=400, detail="Audience téléphone invalide")
+        audience_final = f"phone:{p}"
+    elif audience_raw.startswith("member:"):
+        member_number = audience_raw.split(":", 1)[1].strip()
+        conn_tmp = db()
+        cur_tmp = conn_tmp.cursor()
+        row = cur_tmp.execute(
+            "SELECT phone FROM members WHERE church_id=? AND member_number=? AND is_deleted=0",
+            (church_id, member_number),
+        ).fetchone()
+        conn_tmp.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Membre destinataire introuvable")
+        audience_final = f"phone:{(row['phone'] or '').strip()}"
+    else:
+        raise HTTPException(status_code=400, detail="Audience invalide")
+
     fid = secrets.token_hex(12)
     ts = now_ts()
     phone_ctx = ""
@@ -2071,13 +2259,13 @@ def church_feed_create(body: FeedCreateIn, Authorization: Optional[str] = Header
         phone_ctx = (u["phone"] or "").strip()
     cur.execute(
         "INSERT INTO church_feed_items(id, church_id, kind, body, audience, sender_phone, created_at) VALUES(?,?,?,?,?,?,?)",
-        (fid, church_id, k, body.body.strip(), body.audience.strip(), phone_ctx, ts),
+        (fid, church_id, k, body.body.strip(), audience_final, phone_ctx, ts),
     )
     nid = secrets.token_hex(10)
     title = "Nouvelle annonce" if k == "announcement" else "Nouveau message"
     cur.execute(
         "INSERT INTO church_notifications(id, church_id, target, title, body, sender_phone, created_at, read_phones_json) VALUES(?,?,?,?,?,?,?,?)",
-        (nid, church_id, body.audience.strip(), title, body.body.strip()[:2000], phone_ctx, ts, "[]"),
+        (nid, church_id, audience_final, title, body.body.strip()[:2000], phone_ctx, ts, "[]"),
     )
     conn.commit()
     conn.close()

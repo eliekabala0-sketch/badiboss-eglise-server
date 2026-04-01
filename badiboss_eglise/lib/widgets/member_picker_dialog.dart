@@ -51,7 +51,9 @@ Future<Member?> showMemberPickerDialog(
                               return ListTile(
                                 dense: true,
                                 title: Text('${m.id} • ${m.fullName}'),
-                                subtitle: Text(m.phone),
+                                subtitle: Text(
+                                  '${m.phone} • ${sexToString(m.sex)} • ${maritalToString(m.maritalStatus)}',
+                                ),
                                 onTap: () => Navigator.pop(ctx, m),
                               );
                             },
