@@ -691,6 +691,156 @@ def phone_is_church_non_member_staff(church_id: int, phone_norm: str) -> bool:
         return False
     return (row["role"] or "").upper() != "MEMBRE"
 
+def actor_user_phone(ctx: Dict[str, Any]) -> str:
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT phone FROM users WHERE id=?", (ctx["user_id"],)).fetchone()
+    conn.close()
+    return (row["phone"] or "").strip() if row else ""
+
+def push_phone_target_notification(
+    church_id: int, phone_norm: str, title: str, body: str, sender_phone: str
+) -> None:
+    if not phone_norm or len(phone_norm) < 12 or not phone_norm.startswith("243"):
+        return
+    nid = secrets.token_hex(10)
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO church_notifications(id, church_id, target, title, body, sender_phone, created_at, read_phones_json) VALUES(?,?,?,?,?,?,?,?)",
+        (nid, church_id, f"phone:{phone_norm}", (title or "")[:500], (body or "")[:2000], sender_phone or "", now_ts(), "[]"),
+    )
+    conn.commit()
+    conn.close()
+
+def notify_member_number(
+    church_id: int,
+    member_number: str,
+    title: str,
+    body: str,
+    sender_phone: str,
+) -> None:
+    mn = (member_number or "").strip()
+    if not mn:
+        return
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT phone FROM members WHERE church_id=? AND member_number=? AND is_deleted=0",
+        (church_id, mn),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return
+    push_phone_target_notification(
+        church_id, normalize_phone_rd_congo((row["phone"] or "").strip()), title, body, sender_phone
+    )
+
+def _relation_member_codes(rel: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for k in ("memberCodeA", "memberCodeB"):
+        c = str(rel.get(k) or "").strip()
+        if c:
+            out.append(c)
+    return out
+
+def _irregular_items_dict(payload: Any) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    if not payload or not isinstance(payload, dict):
+        return out
+    raw = payload.get("items")
+    if not isinstance(raw, list):
+        return out
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        iid = str(it.get("id") or "").strip()
+        if iid:
+            out[iid] = it
+    return out
+
+def _notify_irregulars_diff(church_id: int, prev: Any, new: Any, sender_phone: str) -> None:
+    prev_m = _irregular_items_dict(prev)
+    new_m = _irregular_items_dict(new)
+    for iid, it in new_m.items():
+        phone = normalize_phone_rd_congo(str(it.get("phone") or "").strip())
+        if len(phone) != 12 or not phone.startswith("243"):
+            continue
+        shepherd = str(it.get("shepherd") or "").strip()
+        status = str(it.get("status") or "").strip()
+        nfu = str(it.get("nextFollowUp") or "").strip()
+        old = prev_m.get(iid)
+        if old is None:
+            push_phone_target_notification(
+                church_id,
+                phone,
+                "Suivi irrégularité",
+                f"Un accompagnement pour irrégularité a été ouvert pour vous. Berger : {shepherd or 'à préciser'}.",
+                sender_phone,
+            )
+            continue
+        old_sh = str(old.get("shepherd") or "").strip()
+        old_st = str(old.get("status") or "").strip()
+        old_fu = str(old.get("nextFollowUp") or "").strip()
+        parts: List[str] = []
+        if old_sh != shepherd and (shepherd or old_sh):
+            parts.append(f"Berger : {shepherd or old_sh}")
+        if old_st != status and status:
+            parts.append(f"Statut : {status}")
+        if old_fu != nfu and nfu:
+            parts.append(f"Prochain suivi : {nfu}")
+        if parts:
+            push_phone_target_notification(
+                church_id,
+                phone,
+                "Mise à jour suivi",
+                ". ".join(parts),
+                sender_phone,
+            )
+
+def _notify_relations_diff(church_id: int, prev_map: Dict[str, dict], new_payloads: Dict[str, dict], sender_phone: str) -> None:
+    for rel_id, rel in new_payloads.items():
+        codes = _relation_member_codes(rel)
+        if not codes:
+            continue
+        old = prev_map.get(rel_id)
+        if old is None:
+            for mn in codes:
+                try:
+                    notify_member_number(
+                        church_id,
+                        mn,
+                        "Relation pastorale",
+                        "Vous avez été associé(e) à un dossier relationnel (mariage / accompagnement).",
+                        sender_phone,
+                    )
+                except Exception:
+                    pass
+            continue
+        old_step = str(old.get("step") or "")
+        new_step = str(rel.get("step") or "")
+        old_ap = str(old.get("nextAppointment") or "")
+        new_ap = str(rel.get("nextAppointment") or "")
+        if old_step == new_step and old_ap == new_ap:
+            continue
+        detail_parts: List[str] = []
+        if old_step != new_step and new_step:
+            detail_parts.append(f"Étape : {new_step}")
+        if old_ap != new_ap and new_ap:
+            detail_parts.append(f"Prochain rendez-vous : {new_ap}")
+        body = ". ".join(detail_parts) if detail_parts else "Votre dossier relationnel a été mis à jour."
+        for mn in codes:
+            try:
+                notify_member_number(
+                    church_id,
+                    mn,
+                    "Évolution relation pastorale",
+                    body,
+                    sender_phone,
+                )
+            except Exception:
+                pass
+
 # ---------------------------
 # Member counter per church
 # ---------------------------
@@ -1824,17 +1974,30 @@ def validate_member(body: MemberValidateIn, Authorization: Optional[str] = Heade
     ctx = actor_context(Authorization)
     require_perm(ctx, "members.validate")
     church_id = int(ctx["church_id"])
+    mn = body.member_number.strip()
+    sp = actor_user_phone(ctx)
 
     conn = db()
     cur = conn.cursor()
     cur.execute(
         "UPDATE members SET is_validated=?, status=? WHERE church_id=? AND member_number=? AND is_deleted=0",
-        (1 if body.validated else 0, ("active" if body.validated else "pending"), church_id, body.member_number.strip())
+        (1 if body.validated else 0, ("active" if body.validated else "pending"), church_id, mn),
     )
     conn.commit()
     conn.close()
 
     audit(church_id, ctx["user_id"], "member_validate", {"member_number": body.member_number, "validated": body.validated})
+    if body.validated:
+        try:
+            notify_member_number(
+                church_id,
+                mn,
+                "Compte validé",
+                "Votre inscription membre a été validée. Vous pouvez utiliser l’application avec votre compte.",
+                sp,
+            )
+        except Exception:
+            pass
     return {"ok": True, "member_number": body.member_number, "validated": body.validated}
 
 @app.post("/church/members/status")
@@ -1842,6 +2005,7 @@ def set_member_status(body: MemberStatusIn, Authorization: Optional[str] = Heade
     ctx = actor_context(Authorization)
     require_perm(ctx, "members.update")
     church_id = int(ctx["church_id"])
+    mn = body.member_number.strip()
 
     status = body.status.strip().lower()
     if status not in {"pending", "active", "suspended", "banned"}:
@@ -1849,13 +2013,29 @@ def set_member_status(body: MemberStatusIn, Authorization: Optional[str] = Heade
 
     conn = db()
     cur = conn.cursor()
+    prev = cur.execute(
+        "SELECT status FROM members WHERE church_id=? AND member_number=? AND is_deleted=0",
+        (church_id, mn),
+    ).fetchone()
+    old_st = (prev["status"] or "").strip().lower() if prev else ""
     cur.execute(
         "UPDATE members SET status=? WHERE church_id=? AND member_number=? AND is_deleted=0",
-        (status, church_id, body.member_number.strip()),
+        (status, church_id, mn),
     )
     conn.commit()
     conn.close()
     audit(church_id, ctx["user_id"], "member_status", {"member_number": body.member_number, "status": status})
+    if old_st != status:
+        try:
+            notify_member_number(
+                church_id,
+                mn,
+                "Statut membre",
+                f"Votre statut sur l’application a été mis à jour : {status}.",
+                actor_user_phone(ctx),
+            )
+        except Exception:
+            pass
     return {"ok": True, "member_number": body.member_number, "status": status}
 
 @app.post("/church/members/delete")
@@ -1927,9 +2107,10 @@ def update_member_fields(body: MemberUpdateIn, Authorization: Optional[str] = He
     )
 
     u = cur.execute(
-        "SELECT id FROM users WHERE church_id=? AND member_number=?",
+        "SELECT id, role FROM users WHERE church_id=? AND member_number=?",
         (church_id, mn),
     ).fetchone()
+    old_backend_role = (u["role"] or "").strip().upper() if u else None
     if u:
         uid = int(u["id"])
         try:
@@ -1958,6 +2139,17 @@ def update_member_fields(body: MemberUpdateIn, Authorization: Optional[str] = He
     conn.commit()
     conn.close()
     audit(church_id, ctx["user_id"], "member_update", {"member_number": mn})
+    if role_backend and u and old_backend_role and role_backend != old_backend_role:
+        try:
+            notify_member_number(
+                church_id,
+                mn,
+                "Rôle / fonction",
+                f"Votre rôle sur la plateforme est maintenant : {role_backend}. Rouvrez l’onglet Profil pour actualiser le menu.",
+                actor_user_phone(ctx),
+            )
+        except Exception:
+            pass
     return {"ok": True, "member_number": mn}
 
 @app.get("/church/relations/list")
@@ -2056,17 +2248,57 @@ def sync_pastoral_relations(body: PastoralRelationsSyncIn, Authorization: Option
                 raise HTTPException(status_code=409, detail=f"Membre {mc} déjà engagé en relation active")
             seen_open[mc] = rel_id
 
-    cur.execute("DELETE FROM pastoral_relations WHERE church_id=?", (church_id,))
-    n = 0
+    incoming_ids: List[str] = []
+    payloads: Dict[str, dict] = {}
     for rel in body.relations:
         rel_id = str(rel.get("id") or "").strip()
         if not rel_id:
             continue
+        incoming_ids.append(rel_id)
+        payloads[rel_id] = rel if isinstance(rel, dict) else {}
+
+    if not incoming_ids:
+        conn.close()
+        audit(church_id, ctx["user_id"], "relations_sync", {"count": 0, "noop": True})
+        return {"ok": True, "count": 0}
+
+    prev_rows = cur.execute(
+        "SELECT relation_id, payload_json FROM pastoral_relations WHERE church_id=?",
+        (church_id,),
+    ).fetchall()
+    prev_map: Dict[str, dict] = {}
+    for r in prev_rows:
+        try:
+            prev_map[str(r["relation_id"])] = json.loads(r["payload_json"])
+        except Exception:
+            prev_map[str(r["relation_id"])] = {}
+
+    sp = actor_user_phone(ctx)
+    n = 0
+    for rel_id, rel in payloads.items():
         cur.execute(
-            "INSERT INTO pastoral_relations(church_id, relation_id, payload_json, updated_at) VALUES(?,?,?,?)",
+            """
+            INSERT INTO pastoral_relations(church_id, relation_id, payload_json, updated_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(church_id, relation_id) DO UPDATE SET
+              payload_json=excluded.payload_json,
+              updated_at=excluded.updated_at
+            """,
             (church_id, rel_id, json.dumps(rel, ensure_ascii=False), ts),
         )
         n += 1
+
+    placeholders = ",".join("?" * len(incoming_ids))
+    cur.execute(
+        f"DELETE FROM pastoral_relations WHERE church_id=? AND relation_id NOT IN ({placeholders})",
+        (church_id, *incoming_ids),
+    )
+
+    try:
+        _notify_relations_diff(church_id, prev_map, payloads, sp)
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -2362,7 +2594,12 @@ def church_doc_irregulars_set(body: ChurchDocumentSyncIn, Authorization: Optiona
     ctx = actor_context(Authorization)
     require_perm(ctx, "members.update")
     church_id = int(ctx["church_id"])
+    prev = church_document_get(church_id, "irregulars")
     church_document_set(church_id, "irregulars", body.payload)
+    try:
+        _notify_irregulars_diff(church_id, prev, body.payload, actor_user_phone(ctx))
+    except Exception:
+        pass
     audit(church_id, ctx["user_id"], "doc_irregulars", {})
     return {"ok": True}
 

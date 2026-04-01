@@ -73,6 +73,25 @@ final class AuthService {
 
   Future<void> logout() => const SessionStore().clear();
 
+  /// Met à jour la session persistante si le rôle renvoyé par `/me/profile` diffère (promotion / fonction).
+  static Future<AppSession?> refreshSessionRoleIfChanged(AppSession current, Map<String, dynamic>? user) async {
+    if (user == null) return null;
+    final roleBackend = (user['role'] ?? '').toString();
+    final roleName = _mapBackendRoleToRoleName(roleBackend);
+    final role = UserRole.safeFromString(roleName);
+    if (role == current.role && roleName == current.roleName) return null;
+    final next = AppSession(
+      phone: current.phone,
+      role: role,
+      roleName: roleName,
+      churchCode: current.churchCode,
+      token: current.token,
+      createdAtEpochMs: current.createdAtEpochMs,
+    );
+    await const SessionStore().write(next);
+    return next;
+  }
+
   static String _mapBackendRoleToRoleName(String raw) {
     final r = raw.trim().toUpperCase();
     final norm = r.replaceAll('-', '_').replaceAll(' ', '_');

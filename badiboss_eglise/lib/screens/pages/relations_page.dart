@@ -85,6 +85,46 @@ class _RelationsPageState extends State<RelationsPage> {
     }
   }
 
+  Future<void> _pickRelationAppointment(
+    BuildContext dialogCtx,
+    TextEditingController appointment,
+    void Function(void Function()) setLocal,
+  ) async {
+    final now = DateTime.now();
+    final parsed = _parseFlexibleDate(appointment.text.trim());
+    var init = parsed;
+    if (init == null || init.isBefore(now)) {
+      init = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+    }
+    final d = await showDatePicker(
+      context: dialogCtx,
+      initialDate: init,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365 * 8)),
+    );
+    if (d == null) return;
+    final t = await showTimePicker(
+      context: dialogCtx,
+      initialTime: TimeOfDay(hour: init.hour, minute: init.minute),
+    );
+    final h = t?.hour ?? 9;
+    final mi = t?.minute ?? 0;
+    final dt = DateTime(d.year, d.month, d.day, h, mi);
+    final minNow = DateTime(now.year, now.month, now.day, now.hour, now.minute);
+    if (dt.isBefore(minNow)) {
+      if (dialogCtx.mounted) {
+        ScaffoldMessenger.of(dialogCtx).showSnackBar(
+          const SnackBar(content: Text('Le rendez-vous ne peut pas être dans le passé.')),
+        );
+      }
+      return;
+    }
+    final iso =
+        '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}T'
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:00';
+    setLocal(() => appointment.text = iso);
+  }
+
   Future<void> _save() async {
     try {
       final s = await const SessionStore().read();
@@ -276,7 +316,30 @@ class _RelationsPageState extends State<RelationsPage> {
               const SizedBox(height: 8),
               TextField(controller: mentor, decoration: const InputDecoration(labelText: 'Parrain / marraine (facultatif)')),
               const SizedBox(height: 8),
-              TextField(controller: appointment, decoration: const InputDecoration(labelText: 'Prochain rendez-vous + rappel')),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  appointment.text.trim().isEmpty ? 'Choisir date / heure du rendez-vous' : appointment.text.trim(),
+                  style: TextStyle(
+                    fontWeight: appointment.text.trim().isEmpty ? FontWeight.w400 : FontWeight.w600,
+                    color: appointment.text.trim().isEmpty ? Theme.of(ctx).hintColor : null,
+                  ),
+                ),
+                subtitle: const Text('Prochain rendez-vous (calendrier)'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (appointment.text.trim().isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear),
+                        tooltip: 'Effacer',
+                        onPressed: () => setLocal(() => appointment.clear()),
+                      ),
+                    const Icon(Icons.event),
+                  ],
+                ),
+                onTap: () => _pickRelationAppointment(ctx, appointment, setLocal),
+              ),
             ],
             ),
           ),

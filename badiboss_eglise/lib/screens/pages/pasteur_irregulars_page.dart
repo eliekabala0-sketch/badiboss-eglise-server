@@ -3,6 +3,41 @@ import '../../models/member.dart';
 import '../../services/church_api.dart';
 import '../../services/member_directory_service.dart';
 
+Future<String?> pickIrregularFollowUpDateTime(BuildContext context, String current) async {
+  final now = DateTime.now();
+  var init = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+  final raw = current.trim().replaceFirst(' ', 'T');
+  final parsed = DateTime.tryParse(raw.length >= 10 ? raw : '');
+  if (parsed != null && !parsed.isBefore(now)) {
+    init = parsed;
+  }
+  final d = await showDatePicker(
+    context: context,
+    initialDate: init,
+    firstDate: now,
+    lastDate: now.add(const Duration(days: 365 * 8)),
+  );
+  if (d == null) return null;
+  final t = await showTimePicker(
+    context: context,
+    initialTime: TimeOfDay(hour: init.hour, minute: init.minute),
+  );
+  final h = t?.hour ?? 9;
+  final mi = t?.minute ?? 0;
+  final dt = DateTime(d.year, d.month, d.day, h, mi);
+  final minNow = DateTime(now.year, now.month, now.day, now.hour, now.minute);
+  if (dt.isBefore(minNow)) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('La date de suivi ne peut pas être dans le passé.')),
+      );
+    }
+    return null;
+  }
+  return '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}T'
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:00';
+}
+
 class PasteurIrregularsPage extends StatefulWidget {
   final String codeEglise;
 
@@ -95,14 +130,14 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
   }
 
   void _addDialog() {
-    final followUpCtrl = TextEditingController();
     Member? selectedMember;
     Member? selectedShepherd;
     String monthly = 'toujours_irregulier';
+    String followIso = '';
 
     showDialog(
       context: context,
-      builder: (_) => StatefulBuilder(
+      builder: (dialogCtx) => StatefulBuilder(
         builder: (_, setLocal) => AlertDialog(
         title: const Text("Déclarer un membre irrégulier"),
         content: SingleChildScrollView(
@@ -142,9 +177,28 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
               onChanged: (v) => setLocal(() => monthly = v ?? monthly),
               decoration: const InputDecoration(labelText: "Évaluation mensuelle"),
             ),
-            TextField(
-              controller: followUpCtrl,
-              decoration: const InputDecoration(labelText: "Prochain suivi (date/heure)"),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                followIso.isEmpty ? 'Prochain suivi (optionnel)' : followIso,
+                style: TextStyle(color: followIso.isEmpty ? Theme.of(dialogCtx).hintColor : null),
+              ),
+              subtitle: const Text('Calendrier'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (followIso.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => setLocal(() => followIso = ''),
+                    ),
+                  const Icon(Icons.event),
+                ],
+              ),
+              onTap: () async {
+                final v = await pickIrregularFollowUpDateTime(dialogCtx, followIso);
+                if (v != null) setLocal(() => followIso = v);
+              },
             ),
             ],
           ),
@@ -168,7 +222,7 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
                     phone: member.phone,
                     shepherd: '${shepherd.id} • ${shepherd.fullName}',
                     status: "irregulier",
-                    nextFollowUp: followUpCtrl.text.trim(),
+                    nextFollowUp: followIso.trim(),
                     actions: ['Déclaration initiale', 'Évaluation: $monthly'],
                     createdAt: DateTime.now(),
                   ),
@@ -254,29 +308,11 @@ class _PasteurIrregularsPageState extends State<PasteurIrregularsPage> {
     );
   }
 
-  void _editNextFollowUp(_IrregularItem x) {
-    final c = TextEditingController(text: x.nextFollowUp);
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Prochain suivi"),
-        content: TextField(
-          controller: c,
-          decoration: const InputDecoration(labelText: "Date/heure prochaine relance"),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
-          FilledButton(
-            onPressed: () {
-              setState(() => x.nextFollowUp = c.text.trim());
-              _persist();
-              Navigator.pop(context);
-            },
-            child: const Text("Enregistrer"),
-          ),
-        ],
-      ),
-    );
+  Future<void> _editNextFollowUp(_IrregularItem x) async {
+    final v = await pickIrregularFollowUpDateTime(context, x.nextFollowUp);
+    if (v == null || !mounted) return;
+    setState(() => x.nextFollowUp = v);
+    _persist();
   }
 
   @override

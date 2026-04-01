@@ -8,6 +8,8 @@ import '../../core/logout_helper.dart';
 import '../../core/config.dart';
 import '../notifications_page.dart';
 import '../../services/notification_store.dart';
+import '../../auth/auth_service.dart';
+import '../../services/session_refresh.dart';
 
 final class TabProfile extends StatefulWidget {
   const TabProfile({super.key});
@@ -39,7 +41,7 @@ final class _TabProfileState extends State<TabProfile> {
         _status = '';
       });
       if (s != null && s.token.trim().isNotEmpty) {
-        await _loadApiProfile(s.token.trim());
+        await _loadApiProfile(s, s.token.trim());
       }
       if (s != null && (s.churchCode ?? '').trim().isNotEmpty) {
         final gids = await NotificationStore.loadGroupIdsForCurrentUser();
@@ -60,7 +62,7 @@ final class _TabProfileState extends State<TabProfile> {
     }
   }
 
-  Future<void> _loadApiProfile(String token) async {
+  Future<void> _loadApiProfile(AppSession session, String token) async {
     try {
       final uri = Uri.parse('${Config.baseUrl}/me/profile');
       final res = await http.get(uri, headers: {
@@ -73,10 +75,16 @@ final class _TabProfileState extends State<TabProfile> {
         setState(() => _status = (decoded['detail'] ?? decoded['message'] ?? 'Erreur profil').toString());
         return;
       }
+      final userMap = decoded['user'] is Map ? Map<String, dynamic>.from(decoded['user'] as Map) : null;
       setState(() {
-        _apiUser = decoded['user'] is Map ? Map<String, dynamic>.from(decoded['user'] as Map) : null;
+        _apiUser = userMap;
         _apiMember = decoded['member'] is Map ? Map<String, dynamic>.from(decoded['member'] as Map) : null;
       });
+      final updated = await AuthService.refreshSessionRoleIfChanged(session, userMap);
+      if (updated != null && mounted) {
+        setState(() => _session = updated);
+        SessionRefresh.bump();
+      }
     } catch (e) {
       setState(() => _status = 'Profil API indisponible: $e');
     }

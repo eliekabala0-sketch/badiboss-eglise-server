@@ -14,6 +14,7 @@ import 'tabs/tab_reports.dart';
 import 'tabs/tab_profile.dart';
 import '../services/member_list_refresh.dart';
 import '../services/notification_store.dart';
+import '../services/session_refresh.dart';
 
 final class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -36,6 +37,17 @@ final class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     _tabs = <_ShellTab>[];
+    SessionRefresh.tick.addListener(_onSessionRefreshTick);
+    _loadSession();
+  }
+
+  @override
+  void dispose() {
+    SessionRefresh.tick.removeListener(_onSessionRefreshTick);
+    super.dispose();
+  }
+
+  void _onSessionRefreshTick() {
     _loadSession();
   }
 
