@@ -1,18 +1,14 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
-import '../models/member.dart';
-import '../auth/stores/session_store.dart';
 import '../core/config.dart';
 import '../core/phone_rd_congo.dart';
-import '../services/member_list_refresh.dart';
-import '../services/saas_store.dart';
+import '../models/member.dart';
 
 class MemberSelfRegisterScreen extends StatefulWidget {
-  const MemberSelfRegisterScreen({super.key});
+  final String? churchCode;
+  const MemberSelfRegisterScreen({super.key, this.churchCode});
 
   @override
   State<MemberSelfRegisterScreen> createState() => _MemberSelfRegisterScreenState();
@@ -37,10 +33,11 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
 
   String _cleanPhone(String v) => normalizePhoneRdCongo(v);
 
-  String _randId() {
-    final r = Random();
-    final n = 100000 + r.nextInt(900000);
-    return "m_${DateTime.now().millisecondsSinceEpoch}_$n";
+  @override
+  void initState() {
+    super.initState();
+    final cc = (widget.churchCode ?? '').trim();
+    if (cc.isNotEmpty) _churchCode.text = cc;
   }
 
   Future<void> _submit() async {
@@ -50,11 +47,7 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
     });
 
     try {
-      final s = await const SessionStore().read();
-      var churchCode = _churchCode.text.trim();
-      if (churchCode.isEmpty) {
-        churchCode = (s?.churchCode ?? '').trim();
-      }
+      final churchCode = _churchCode.text.trim();
 
       if (churchCode.isEmpty) {
         setState(() {
@@ -62,18 +55,6 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
           _message = "Church code obligatoire : saisissez le code de votre église.";
         });
         return;
-      }
-
-      final churches = await SaaSStore.loadChurches();
-      if (churches.isNotEmpty) {
-        final codeOk = churches.any((c) => c.churchCode.toUpperCase() == churchCode.toUpperCase());
-        if (!codeOk) {
-          setState(() {
-            _loading = false;
-            _message = "Church code inconnu : ce code ne correspond à aucune église enregistrée. Vérifiez l'orthographe.";
-          });
-          return;
-        }
       }
 
       if (_fullName.text.trim().isEmpty) {
@@ -126,32 +107,6 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
         return;
       }
 
-      final m = Member(
-        id: _randId(),
-        churchCode: churchCode,
-        fullName: _fullName.text.trim(),
-        phone: phoneClean,
-        role: 'member',
-        status: MemberStatus.pending, // self-register -> validation obligatoire
-
-        // Adresse minimale (OK)
-        commune: _commune.text.trim(),
-        quartier: _quartier.text.trim(),
-        zone: _zone.text.trim(),
-
-        // Champs conservés pour compatibilité (mais vides)
-        neighborhood: '',
-        region: '',
-        province: '',
-        addressLine: '',
-
-        sex: _sex,
-        maritalStatus: _marital,
-        birthDateIso: _birthDate?.toIso8601String() ?? '',
-        createdBy: 'self',
-        createdAt: DateTime.now(),
-      );
-
       final uri = Uri.parse('${Config.baseUrl}/public/members/self_register');
       final res = await http
           .post(
@@ -162,16 +117,16 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
             },
             body: jsonEncode({
               'church_code': churchCode,
-              'full_name': m.fullName,
-              'phone': m.phone,
+              'full_name': _fullName.text.trim(),
+              'phone': phoneClean,
               'sex': sexToString(_sex),
-              'quarter': m.quartier,
+              'quarter': _quartier.text.trim(),
               'category': 'member',
               'presence_status': 'unknown',
               'marital_status': maritalToString(_marital),
               'birth_date': _birthDate?.toIso8601String().substring(0, 10),
-              'commune': m.commune,
-              'zone': m.zone,
+              'commune': _commune.text.trim(),
+              'zone': _zone.text.trim(),
               'address_line': '',
               'neighborhood': '',
               'region': '',
@@ -192,7 +147,6 @@ class _MemberSelfRegisterScreenState extends State<MemberSelfRegisterScreen> {
         throw StateError(msg);
       }
 
-      MemberListRefresh.bump();
       setState(() {
         _loading = false;
         _message = "Enregistrement envoyé ✅\nStatut: pending (attente validation admin/pasteur).";
