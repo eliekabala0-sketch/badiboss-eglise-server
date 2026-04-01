@@ -11,15 +11,10 @@ import os
 
 app = FastAPI(title="Badiboss Multi-Church Server", version="2.0.0")
 
-# CORS (Flutter Web + Railway):
-# - allow production frontend origin explicitly
-# - keep localhost / 127.0.0.1 with any port for local web dev
+# CORS: Flutter Web (Railway) + local dev — public routes must never fail preflight or error responses without ACAO.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lovely-manifestation-production-e17b.up.railway.app",
-    ],
-    allow_origin_regex=r"https://.*\.up\.railway\.app|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -59,7 +54,7 @@ def normalize_phone_rd_congo(v: str) -> str:
 # DB helpers
 # ---------------------------
 def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -285,6 +280,8 @@ def ensure_members_columns():
         add_col("ALTER TABLE members ADD COLUMN region TEXT NOT NULL DEFAULT ''")
     if "province" not in existing:
         add_col("ALTER TABLE members ADD COLUMN province TEXT NOT NULL DEFAULT ''")
+    if "birth_date" not in existing:
+        add_col("ALTER TABLE members ADD COLUMN birth_date TEXT NOT NULL DEFAULT ''")
     if "member_card_payload" not in existing:
         add_col("ALTER TABLE members ADD COLUMN member_card_payload TEXT NOT NULL DEFAULT ''")
 
@@ -541,7 +538,10 @@ def apply_role_restrictions(church_id: int, role: str, perms: List[str]) -> List
     conn.close()
     if not row:
         return perms
-    denied = set(json.loads(row["denied_permissions_json"] or "[]"))
+    try:
+        denied = set(json.loads(row["denied_permissions_json"] or "[]"))
+    except json.JSONDecodeError:
+        denied = set()
     return [p for p in perms if p not in denied]
 
 def seed_if_empty():
@@ -1609,6 +1609,7 @@ def create_member(body: MemberCreateIn, Authorization: Optional[str] = Header(de
 
 @app.post("/public/members/self_register")
 def public_member_self_register(body: PublicMemberSelfRegisterIn):
+    ensure_members_columns()
     church_code = (body.church_code or "").strip()
     if church_code == "":
         raise HTTPException(status_code=400, detail="church_code requis")
@@ -1662,6 +1663,7 @@ def public_member_self_register(body: PublicMemberSelfRegisterIn):
         conn.close()
         raise HTTPException(status_code=409, detail="Téléphone déjà utilisé dans cette église")
 
+    user_id = None
     try:
         perms = default_permissions_for_role("MEMBRE")
         perms = apply_role_restrictions(church_id, "MEMBRE", perms)
@@ -1682,11 +1684,14 @@ def public_member_self_register(body: PublicMemberSelfRegisterIn):
         )
         user_id = int(cur.lastrowid)
     except sqlite3.IntegrityError:
-        user_id = None
+        pass
     conn.commit()
     conn.close()
-    audit(church_id, None, "public_member_self_register", {"member_number": member_number, "user_id": user_id})
-    return {"ok": True, "member_number": member_number, "status": "pending"}
+    try:
+        audit(church_id, None, "public_member_self_register", {"member_number": member_number, "user_id": user_id})
+    except Exception:
+        pass
+    return {"ok": True, "member_number": member_number, "status": "pending", "user_id": user_id}
 
 @app.get("/church/members/list")
 def list_members(pending_only: bool = False, Authorization: Optional[str] = Header(default=None)):
