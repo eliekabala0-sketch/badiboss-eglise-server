@@ -44,6 +44,7 @@ final class Permissions {
   static const String viewMessages = 'view_messages';
   static const String sendMessages = 'send_messages';
   static const String moderateMessages = 'moderate_messages';
+  static const String replyMessages = 'reply_messages';
   static const String viewGroups = 'view_groups';
   static const String manageGroups = 'manage_groups';
 
@@ -73,6 +74,7 @@ final class Permissions {
     viewMessages,
     sendMessages,
     moderateMessages,
+    replyMessages,
     viewGroups,
     manageGroups,
   ];

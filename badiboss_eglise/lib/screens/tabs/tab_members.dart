@@ -538,6 +538,24 @@ class _TabMembersState extends State<TabMembers> {
         .toList();
   }
 
+  static String _accountRoleToUi(String? ar) {
+    final a = (ar ?? '').trim().toUpperCase();
+    switch (a) {
+      case 'MEMBRE':
+        return 'membre';
+      case 'PROTOCOLE':
+        return 'protocole';
+      case 'SECRETAIRE':
+        return 'secretaire';
+      case 'FINANCE':
+        return 'finance';
+      case 'PASTEUR_RESPONSABLE':
+        return 'admin';
+      default:
+        return 'membre';
+    }
+  }
+
   Member _memberFromApiMap(
     Map<String, dynamic> m, {
     required String churchCode,
@@ -568,7 +586,7 @@ class _TabMembersState extends State<TabMembers> {
       region: (m['region'] ?? '').toString(),
       province: (m['province'] ?? '').toString(),
       churchCode: churchCode,
-      role: 'membre',
+      role: _accountRoleToUi(m['account_role']?.toString()),
       status: status,
       regularityTag: (m['regularity_tag'] ?? 'monitoring').toString(),
       regularityTrend: (m['regularity_trend'] ?? 'stable').toString(),

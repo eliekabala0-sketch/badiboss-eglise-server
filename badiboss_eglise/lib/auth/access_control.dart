@@ -26,6 +26,11 @@ final class AccessControl {
           Permissions.exportFinance,
           Permissions.viewGroups,
           Permissions.manageGroups,
+          Permissions.viewAnnouncements,
+          Permissions.manageAnnouncements,
+          Permissions.viewMessages,
+          Permissions.sendMessages,
+          Permissions.replyMessages,
         };
       case UserRole.admin:
         return <String>{
@@ -40,12 +45,20 @@ final class AccessControl {
           Permissions.exportReports,
           Permissions.viewGroups,
           Permissions.manageGroups,
+          Permissions.viewAnnouncements,
+          Permissions.manageAnnouncements,
+          Permissions.viewMessages,
+          Permissions.sendMessages,
+          Permissions.replyMessages,
         };
       case UserRole.membre:
         return <String>{
           Permissions.viewMembers,
           Permissions.viewPresenceHistory,
           Permissions.viewGroups,
+          Permissions.viewAnnouncements,
+          Permissions.viewMessages,
+          Permissions.replyMessages,
         };
     }
   }

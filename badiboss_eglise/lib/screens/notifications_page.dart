@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../auth/stores/session_store.dart';
+import '../core/phone_rd_congo.dart';
 import '../services/notification_store.dart';
 
 final class NotificationsPage extends StatefulWidget {
@@ -29,13 +30,14 @@ final class _NotificationsPageState extends State<NotificationsPage> {
     _role = (s?.roleName ?? '').trim();
     _church = (s?.churchCode ?? '').trim();
     final all = await NotificationStore.loadAll();
+    final gids = await NotificationStore.loadGroupIdsForCurrentUser();
     _items = all.where((n) {
       return NotificationStore.isTargetFor(
         n: n,
         churchCode: _church,
-        role: _role,
+        role: _role.toLowerCase(),
         phone: _phone,
-        groupIds: const <String>[],
+        groupIds: gids,
       );
     }).toList();
     if (!mounted) return;
@@ -53,7 +55,8 @@ final class _NotificationsPageState extends State<NotificationsPage> {
           itemCount: _items.length,
           itemBuilder: (_, i) {
             final n = _items[i];
-            final unread = !n.readByPhones.contains(_phone);
+            final unread =
+                !n.readByPhones.any((x) => normalizePhoneRdCongo(x) == normalizePhoneRdCongo(_phone));
             return Card(
               child: ListTile(
                 leading: Icon(unread ? Icons.notifications_active_rounded : Icons.notifications_none_rounded),

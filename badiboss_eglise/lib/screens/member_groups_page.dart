@@ -21,6 +21,7 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
   List<Member> _members = <Member>[];
   String _phone = '';
   String _church = '';
+  String _myMemberNumber = '';
   String _roleName = '';
   bool _canManage = false;
   bool _canView = true;
@@ -44,6 +45,12 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
     }
     _groups = <_Group>[];
     _requests = <_GroupRequest>[];
+    _myMemberNumber = '';
+    try {
+      final prof = await ChurchApi.getJson('/me/profile');
+      final u = prof['user'];
+      if (u is Map) _myMemberNumber = (u['member_number'] ?? '').toString().trim();
+    } catch (_) {}
     var fromServer = false;
     try {
       final dec = await ChurchApi.getJson('/church/documents/member_groups');
@@ -73,9 +80,11 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
         _Group(id: 'mamans', name: 'Mamans', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
         _Group(id: 'musiciens', name: 'Musiciens', leaderPhone: '', leaderName: '', leaderRoleLabel: '', churchCode: _church, memberIds: <String>[]),
       ];
-      try {
-        await _persist();
-      } catch (_) {}
+      if (_canManage || _canCreateGroup) {
+        try {
+          await _persist();
+        } catch (_) {}
+      }
     }
     _members = await const MemberDirectoryService().loadMembersForActiveChurch();
     if (!mounted) return;
@@ -117,7 +126,17 @@ final class _MemberGroupsPageState extends State<MemberGroupsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(g.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                      Row(
+                        children: [
+                          Expanded(child: Text(g.name, style: const TextStyle(fontWeight: FontWeight.w700))),
+                          if (_myMemberNumber.isNotEmpty && g.memberIds.contains(_myMemberNumber))
+                            Chip(
+                              label: const Text('Vous êtes membre'),
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                        ],
+                      ),
                       const SizedBox(height: 4),
                       Text('Responsable: ${g.leaderName.isEmpty ? "-" : "${g.leaderName} (${g.leaderRoleLabel})"}'),
                       Text('Membres: ${g.memberIds.length}'),

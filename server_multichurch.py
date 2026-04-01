@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import sqlite3
 import json
 import time
@@ -523,6 +523,7 @@ def default_permissions_for_role(role: str) -> List[str]:
         "MEMBRE": [
             "church.read",
             "announcements.read","programs.read",
+            "messages.reply",
             "me.read","me.update","me.attendance.read","me.finance.read","me.assignments.read","me.notifications.read",
         ]
     }
@@ -662,6 +663,33 @@ def require_perm(ctx: Dict[str, Any], perm: str):
     cid = int(ctx["church_id"])
     if not user_has_permission(cid, ctx["user_id"], perm):
         raise HTTPException(status_code=403, detail=f"Permission manquante: {perm}")
+
+def ui_member_role_to_backend(ui: Optional[str]) -> Optional[str]:
+    if not ui:
+        return None
+    m = {
+        "membre": "MEMBRE",
+        "protocole": "PROTOCOLE",
+        "secretaire": "SECRETAIRE",
+        "secrétaire": "SECRETAIRE",
+        "finance": "FINANCE",
+        "admin": "SECRETAIRE",
+    }
+    return m.get(ui.strip().lower())
+
+def phone_is_church_non_member_staff(church_id: int, phone_norm: str) -> bool:
+    if not phone_norm:
+        return False
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT role FROM users WHERE church_id=? AND phone=?",
+        (church_id, phone_norm),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return False
+    return (row["role"] or "").upper() != "MEMBRE"
 
 # ---------------------------
 # Member counter per church
@@ -1076,6 +1104,16 @@ class MemberStatusIn(BaseModel):
 
 class MemberDeleteIn(BaseModel):
     member_number: str
+
+class MemberUpdateIn(BaseModel):
+    member_number: str
+    full_name: str
+    phone: str
+    commune: Optional[str] = ""
+    quarter: Optional[str] = ""
+    zone: Optional[str] = ""
+    address_line: Optional[str] = ""
+    role_name: Optional[str] = None  # membre|protocole|secretaire|finance|admin
 
 class DonationCreateIn(BaseModel):
     member_number: str
@@ -1771,6 +1809,11 @@ def list_members(pending_only: bool = False, Authorization: Optional[str] = Head
         d["regularity_trend"] = trend
         d["regularity_present_count"] = present
         d["regularity_marked_count"] = marked
+        urow = cur.execute(
+            "SELECT role FROM users WHERE church_id=? AND member_number=? LIMIT 1",
+            (church_id, mn),
+        ).fetchone()
+        d["account_role"] = (urow["role"] or "").strip() if urow else None
         out_members.append(d)
 
     conn.close()
@@ -1831,6 +1874,91 @@ def delete_member(body: MemberDeleteIn, Authorization: Optional[str] = Header(de
     conn.close()
     audit(church_id, ctx["user_id"], "member_delete", {"member_number": body.member_number})
     return {"ok": True, "member_number": body.member_number}
+
+@app.post("/church/members/update")
+def update_member_fields(body: MemberUpdateIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "members.update")
+    church_id = int(ctx["church_id"])
+    mn = body.member_number.strip()
+    if not mn:
+        raise HTTPException(status_code=400, detail="member_number requis")
+
+    phone_norm = normalize_phone_rd_congo((body.phone or "").strip())
+    if len(phone_norm) != 12 or not phone_norm.startswith("243"):
+        raise HTTPException(status_code=400, detail="Numéro RDC invalide")
+    full_name = (body.full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Nom complet requis")
+
+    conn = db()
+    cur = conn.cursor()
+    ex = cur.execute(
+        "SELECT id FROM members WHERE church_id=? AND member_number=? AND is_deleted=0",
+        (church_id, mn),
+    ).fetchone()
+    if not ex:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Membre introuvable")
+
+    dup = cur.execute(
+        "SELECT member_number FROM members WHERE church_id=? AND phone=? AND member_number<>? AND is_deleted=0",
+        (church_id, phone_norm, mn),
+    ).fetchone()
+    if dup:
+        conn.close()
+        raise HTTPException(status_code=409, detail="Téléphone déjà utilisé par un autre membre")
+
+    cur.execute(
+        """
+        UPDATE members SET full_name=?, phone=?, commune=?, quarter=?, zone=?, address_line=?
+        WHERE church_id=? AND member_number=? AND is_deleted=0
+        """,
+        (
+            full_name,
+            phone_norm,
+            (body.commune or "").strip(),
+            (body.quarter or "").strip(),
+            (body.zone or "").strip(),
+            (body.address_line or "").strip(),
+            church_id,
+            mn,
+        ),
+    )
+
+    u = cur.execute(
+        "SELECT id FROM users WHERE church_id=? AND member_number=?",
+        (church_id, mn),
+    ).fetchone()
+    if u:
+        uid = int(u["id"])
+        try:
+            cur.execute(
+                "UPDATE users SET full_name=?, phone=? WHERE id=? AND church_id=?",
+                (full_name, phone_norm, uid, church_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.close()
+            raise HTTPException(status_code=409, detail="Téléphone déjà utilisé par un autre compte")
+
+    role_backend = ui_member_role_to_backend(body.role_name)
+    if role_backend and u:
+        uid = int(u["id"])
+        perms = default_permissions_for_role(role_backend)
+        perms = apply_role_restrictions(church_id, role_backend, perms)
+        try:
+            cur.execute(
+                "UPDATE users SET role=?, phone=?, full_name=?, permissions_json=? WHERE id=? AND church_id=?",
+                (role_backend, phone_norm, full_name, json.dumps(perms), uid, church_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.close()
+            raise HTTPException(status_code=409, detail="Conflit compte utilisateur")
+
+    conn.commit()
+    conn.close()
+    audit(church_id, ctx["user_id"], "member_update", {"member_number": mn})
+    return {"ok": True, "member_number": mn}
 
 @app.get("/church/relations/list")
 def list_pastoral_relations(Authorization: Optional[str] = Header(default=None)):
@@ -2145,12 +2273,80 @@ def church_doc_member_groups_get(Authorization: Optional[str] = Header(default=N
     data = church_document_get(church_id, "member_groups")
     return {"ok": True, "payload": data}
 
+def _notify_member_group_additions(church_id: int, old_payload: Dict[str, Any], new_payload: Dict[str, Any], actor_phone: str) -> None:
+    def _group_maps(payload: Dict[str, Any]) -> Dict[str, Tuple[set, str]]:
+        out: Dict[str, Tuple[set, str]] = {}
+        groups = payload.get("groups")
+        if not isinstance(groups, list):
+            return out
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            gid = (g.get("id") or "").strip()
+            if not gid:
+                continue
+            gname = (g.get("name") or gid).strip()
+            mids = g.get("memberIds")
+            idset = set()
+            if isinstance(mids, list):
+                for x in mids:
+                    s = (str(x) if x is not None else "").strip()
+                    if s:
+                        idset.add(s)
+            out[gid] = (idset, gname)
+        return out
+
+    old_m = _group_maps(old_payload)
+    new_m = _group_maps(new_payload)
+    all_ids = set(old_m.keys()) | set(new_m.keys())
+    if not all_ids:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+    ts = now_ts()
+    for gid in all_ids:
+        old_set, _on = old_m.get(gid, (set(), gid))
+        new_set, gname = new_m.get(gid, (set(), gid))
+        for mn in new_set - old_set:
+            row = cur.execute(
+                "SELECT phone, full_name FROM members WHERE church_id=? AND member_number=? AND is_deleted=0",
+                (church_id, mn),
+            ).fetchone()
+            if not row:
+                continue
+            p = normalize_phone_rd_congo((row["phone"] or "").strip())
+            if len(p) < 12:
+                continue
+            nm = (row["full_name"] or "").strip()
+            nid = secrets.token_hex(10)
+            title = f"Groupe: {gname}"
+            body_txt = f"Vous avez été ajouté au groupe « {gname} »."
+            cur.execute(
+                "INSERT INTO church_notifications(id, church_id, target, title, body, sender_phone, created_at, read_phones_json) VALUES(?,?,?,?,?,?,?,?)",
+                (nid, church_id, f"phone:{p}", title, body_txt[:2000], (actor_phone or "").strip(), ts, "[]"),
+            )
+    conn.commit()
+    conn.close()
+
 @app.post("/church/documents/member_groups")
 def church_doc_member_groups_set(body: ChurchDocumentSyncIn, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
     require_perm(ctx, "programs.write")
     church_id = int(ctx["church_id"])
+    prev = church_document_get(church_id, "member_groups")
     church_document_set(church_id, "member_groups", body.payload)
+    actor_phone = ""
+    conn = db()
+    cur = conn.cursor()
+    u = cur.execute("SELECT phone FROM users WHERE id=?", (ctx["user_id"],)).fetchone()
+    conn.close()
+    if u:
+        actor_phone = (u["phone"] or "").strip()
+    try:
+        _notify_member_group_additions(church_id, prev, body.payload, actor_phone)
+    except Exception:
+        pass
     audit(church_id, ctx["user_id"], "doc_member_groups", {})
     return {"ok": True}
 
@@ -2225,11 +2421,26 @@ def church_feed_list(kind: Optional[str] = None, Authorization: Optional[str] = 
 @app.post("/church/feed/create")
 def church_feed_create(body: FeedCreateIn, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
-    require_perm(ctx, "announcements.write")
     church_id = int(ctx["church_id"])
     k = body.kind.strip().lower()
     if k not in ("announcement", "message"):
         raise HTTPException(status_code=400, detail="kind invalide")
+
+    can_broadcast = ctx["role"] == "SUPER_ADMIN" or user_has_permission(church_id, ctx["user_id"], "announcements.write")
+    # Rôle MEMBRE: réponse autorisée même si permissions_json figé (terrain sans re-login)
+    can_reply_msg = (
+        ctx["role"] == "SUPER_ADMIN"
+        or user_has_permission(church_id, ctx["user_id"], "messages.reply")
+        or ctx["role"] == "MEMBRE"
+    )
+
+    if k == "announcement":
+        if not can_broadcast:
+            require_perm(ctx, "announcements.write")
+    else:
+        if not (can_broadcast or can_reply_msg):
+            raise HTTPException(status_code=403, detail="Permission manquante pour ce message")
+
     audience_raw = (body.audience or "all").strip()
     audience_final = audience_raw
     if audience_raw in {"all", "admins", "members"}:
@@ -2250,9 +2461,16 @@ def church_feed_create(body: FeedCreateIn, Authorization: Optional[str] = Header
         conn_tmp.close()
         if not row:
             raise HTTPException(status_code=404, detail="Membre destinataire introuvable")
-        audience_final = f"phone:{(row['phone'] or '').strip()}"
+        audience_final = f"phone:{normalize_phone_rd_congo((row['phone'] or '').strip())}"
     else:
         raise HTTPException(status_code=400, detail="Audience invalide")
+
+    if k == "message" and can_reply_msg and not can_broadcast:
+        if not audience_final.startswith("phone:"):
+            raise HTTPException(status_code=400, detail="Réponse: destinataire (téléphone) obligatoire")
+        tp = audience_final.split(":", 1)[1].strip()
+        if not phone_is_church_non_member_staff(church_id, tp):
+            raise HTTPException(status_code=403, detail="Réponse réservée vers un responsable (staff)")
 
     fid = secrets.token_hex(12)
     ts = now_ts()
@@ -2914,8 +3132,19 @@ def me_attendance(Authorization: Optional[str] = Header(default=None)):
     member_number = u["member_number"]
 
     rows = cur.execute(
-        "SELECT * FROM attendance_records WHERE church_id=? AND member_number=? ORDER BY id DESC",
-        (church_id, member_number)
+        """
+        SELECT ar.id AS id, ar.church_id AS church_id, ar.event_id AS event_id, ar.member_number AS member_number,
+               ar.present AS present, ar.created_at AS created_at,
+               COALESCE(ar.guest_name, '') AS guest_name,
+               COALESCE(ae.title, '') AS event_title,
+               COALESCE(ae.event_date, '') AS event_date,
+               COALESCE(ae.status, '') AS event_status
+        FROM attendance_records ar
+        LEFT JOIN attendance_events ae ON ae.id = ar.event_id AND ae.church_id = ar.church_id
+        WHERE ar.church_id=? AND ar.member_number=?
+        ORDER BY ar.id DESC
+        """,
+        (church_id, member_number),
     ).fetchall()
     conn.close()
     return {"ok": True, "member_number": member_number, "records": [dict(r) for r in rows]}

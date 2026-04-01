@@ -38,6 +38,7 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
   int _totalCount = 0;
   int _membersCount = 0;
   int _guestsCount = 0;
+  bool _memberScopedList = false;
 
   Timer? _poll;
 
@@ -46,7 +47,8 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
     super.initState();
     _load();
     _poll = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!mounted || _selected == null || _session == null) return;
+      if (!mounted || _session == null) return;
+      if (!_memberScopedList && _selected == null) return;
       unawaited(_reloadPresence());
     });
   }
@@ -64,6 +66,12 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
         _status = 'Session introuvable.';
       });
     }
+  }
+
+  bool _isMemberSession(AppSession? s) {
+    if (s == null) return false;
+    final rn = s.roleName.toLowerCase().trim();
+    return s.role.toJson() == 'membre' || rn == 'membre' || rn == 'member';
   }
 
   String? _effectiveChurchCode() {
@@ -98,6 +106,18 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
     });
 
     try {
+      if (_isMemberSession(s)) {
+        _memberScopedList = true;
+        await _reloadMyAttendanceOnly(token: s.token, churchCode: cc);
+        if (!mounted) return;
+        setState(() {
+          _activities = <Activity>[];
+          _selected = null;
+        });
+        return;
+      }
+      _memberScopedList = false;
+
       final acts = await _fetchEventsFromApi(token: s.token, churchCode: cc);
       final names = await _fetchMemberNames(token: s.token);
       if (!mounted) return;
@@ -124,9 +144,72 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
     }
   }
 
+  Future<void> _reloadMyAttendanceOnly({
+    required String token,
+    required String churchCode,
+  }) async {
+    final uri = Uri.parse('${Config.baseUrl}/me/attendance');
+    final res = await http
+        .get(uri, headers: {'accept': 'application/json', 'Authorization': 'Bearer $token'})
+        .timeout(Duration(seconds: Config.timeoutSeconds));
+    final text = res.body.isEmpty ? '{}' : res.body;
+    final decoded = jsonDecode(text);
+    if (decoded is! Map) throw StateError('Réponse API invalide');
+    if (res.statusCode == 403) {
+      throw StateError((decoded['detail'] ?? 'Compte non lié à un membre valide').toString());
+    }
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw StateError((decoded['detail'] ?? 'Erreur API').toString());
+    }
+    final list = decoded['records'];
+    final mn = (decoded['member_number'] ?? '').toString().trim();
+    final out = <PresenceEntry>[];
+    if (list is List) {
+      for (final e in list) {
+        if (e is! Map) continue;
+        final m = Map<String, dynamic>.from(e);
+        final createdAt = int.tryParse((m['created_at'] ?? '').toString()) ?? 0;
+        final evTitle = (m['event_title'] ?? '').toString().trim();
+        final evDate = (m['event_date'] ?? '').toString().trim();
+        final label = [evTitle, evDate].where((x) => x.isNotEmpty).join(' • ');
+        out.add(
+          PresenceEntry(
+            id: 'me_${m['id'] ?? createdAt}',
+            churchCode: churchCode,
+            activityId: (m['event_id'] ?? '').toString(),
+            memberId: (m['member_number'] ?? mn).toString(),
+            memberPhone: '',
+            memberName: label.isEmpty ? 'Activité' : label,
+            markedByPhone: '',
+            markedAt: DateTime.fromMillisecondsSinceEpoch(createdAt * 1000),
+          ),
+        );
+      }
+    }
+    out.sort((a, b) => b.markedAt.compareTo(a.markedAt));
+    if (!mounted) return;
+    _applyStats(out);
+    setState(() {
+      _items = out;
+      _status = out.isEmpty ? 'Aucune présence enregistrée pour votre compte.' : '';
+    });
+  }
+
   Future<void> _reloadPresence() async {
     final cc = _effectiveChurchCode();
     final a = _selected;
+    if (_memberScopedList) {
+      final s = _session;
+      if (s == null || cc == null) return;
+      try {
+        await _reloadMyAttendanceOnly(token: s.token, churchCode: cc);
+      } catch (e) {
+        if (!mounted) return;
+        final msg = e is StateError ? e.message : e.toString();
+        setState(() => _status = 'Erreur serveur: $msg');
+      }
+      return;
+    }
     if (cc == null || a == null) {
       setState(() => _items = <PresenceEntry>[]);
       return;
@@ -323,7 +406,18 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
                     ],
 
                     const SizedBox(height: 8),
-                    if (_selected != null)
+                    if (_memberScopedList && _items.isNotEmpty)
+                      Card(
+                        elevation: 0,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            'Présences enregistrées: $_totalCount',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ),
+                    if (!_memberScopedList && _selected != null)
                       Card(
                         elevation: 0,
                         child: Padding(
@@ -341,7 +435,16 @@ final class _PresenceHistoryPageState extends State<PresenceHistoryPage> {
                         ),
                       ),
 
-                    if (_activities.isNotEmpty)
+                    if (_memberScopedList)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'Vue limitée à vos propres présences (compte membre).',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+
+                    if (!_memberScopedList && _activities.isNotEmpty)
                       DropdownButton<Activity>(
                         isExpanded: true,
                         value: _selected,

@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 
 import '../auth/stores/session_store.dart';
 import '../core/config.dart';
+import '../core/phone_rd_congo.dart';
+import 'church_api.dart';
 
 final class AppNotification {
   final String id;
@@ -127,9 +129,43 @@ final class NotificationStore {
     if (n.target == 'admins') {
       return role == 'admin' || role == 'pasteur' || role == 'super_admin';
     }
-    if (n.target.startsWith('phone:')) return n.target.substring(6) == phone;
+    if (n.target.startsWith('phone:')) {
+      return normalizePhoneRdCongo(n.target.substring(6)) == normalizePhoneRdCongo(phone);
+    }
     if (n.target.startsWith('group:')) return groupIds.contains(n.target.substring(6));
     return false;
+  }
+
+  /// IDs de groupes (`member_groups`) dont le membre courant fait partie (via [member_number] profil).
+  static Future<List<String>> loadGroupIdsForCurrentUser() async {
+    final s = await const SessionStore().read();
+    if (s == null || (s.churchCode ?? '').trim().isEmpty) return <String>[];
+    var mn = '';
+    try {
+      final d = await ChurchApi.getJson('/me/profile');
+      final u = d['user'];
+      if (u is Map) mn = (u['member_number'] ?? '').toString().trim();
+    } catch (_) {}
+    if (mn.isEmpty) return <String>[];
+    try {
+      final d = await ChurchApi.getJson('/church/documents/member_groups');
+      final pay = d['payload'];
+      if (pay is! Map) return <String>[];
+      final g = pay['groups'];
+      if (g is! List) return <String>[];
+      final out = <String>[];
+      for (final e in g) {
+        if (e is! Map) continue;
+        final id = (e['id'] ?? '').toString().trim();
+        final mids = e['memberIds'];
+        if (id.isEmpty || mids is! List) continue;
+        final set = mids.map((x) => x.toString().trim()).where((x) => x.isNotEmpty).toSet();
+        if (set.contains(mn)) out.add(id);
+      }
+      return out;
+    } catch (_) {
+      return <String>[];
+    }
   }
 
   static Future<int> countUnreadFor({
@@ -149,7 +185,9 @@ final class NotificationStore {
       )) {
         return false;
       }
-      return !n.readByPhones.contains(phone);
+      final pnorm = normalizePhoneRdCongo(phone);
+      final read = n.readByPhones.any((x) => normalizePhoneRdCongo(x) == pnorm);
+      return !read;
     }).length;
   }
 

@@ -64,11 +64,12 @@ final class _AppShellState extends State<AppShell> {
   Future<void> _loadUnread() async {
     final s = _session;
     if (s == null || (s.churchCode ?? '').trim().isEmpty) return;
+    final gids = await NotificationStore.loadGroupIdsForCurrentUser();
     final c = await NotificationStore.countUnreadFor(
       churchCode: s.churchCode!.trim(),
       role: s.roleName.toLowerCase(),
       phone: s.phone.trim(),
-      groupIds: const <String>[],
+      groupIds: gids,
     );
     if (!mounted) return;
     setState(() => _unread = c);

@@ -42,11 +42,12 @@ final class _TabProfileState extends State<TabProfile> {
         await _loadApiProfile(s.token.trim());
       }
       if (s != null && (s.churchCode ?? '').trim().isNotEmpty) {
+        final gids = await NotificationStore.loadGroupIdsForCurrentUser();
         final c = await NotificationStore.countUnreadFor(
           churchCode: s.churchCode!.trim(),
           role: s.roleName.toLowerCase(),
           phone: s.phone.trim(),
-          groupIds: const <String>[],
+          groupIds: gids,
         );
         if (mounted) setState(() => _unread = c);
       }
