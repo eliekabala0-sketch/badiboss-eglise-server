@@ -75,7 +75,7 @@ final class _AppShellState extends State<AppShell> {
 
   Future<void> _loadUnread() async {
     final s = _session;
-    if (s == null || (s.churchCode ?? '').trim().isEmpty) return;
+    if (s == null || (s.churchCode ?? '').trim().isEmpty || s.token.trim().isEmpty) return;
     final gids = await NotificationStore.loadGroupIdsForCurrentUser();
     final c = await NotificationStore.countUnreadFor(
       churchCode: s.churchCode!.trim(),

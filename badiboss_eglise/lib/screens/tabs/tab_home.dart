@@ -75,7 +75,7 @@ class _TabHomeState extends State<TabHome> {
 
   Future<void> _loadUnread() async {
     final s = _session;
-    if (s == null || (s.churchCode ?? '').trim().isEmpty) return;
+    if (s == null || (s.churchCode ?? '').trim().isEmpty || s.token.trim().isEmpty) return;
     final gids = await NotificationStore.loadGroupIdsForCurrentUser();
     final count = await NotificationStore.countUnreadFor(
       churchCode: s.churchCode!.trim(),
@@ -103,7 +103,36 @@ class _TabHomeState extends State<TabHome> {
                   slivers: [
                     SliverToBoxAdapter(child: _HomeHeader(session: s, scheme: scheme)),
                     SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+                      sliver: SliverToBoxAdapter(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AppColors.onSurface.withOpacity(0.06)),
+                          ),
+                          child: Row(
+                            children: const [
+                              Icon(Icons.auto_awesome_rounded, color: AppColors.gold),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Tableau de bord centralisé: membres, présences, finances et communication.',
+                                  style: TextStyle(
+                                    color: AppColors.mutedText,
+                                    fontSize: 13,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
                       sliver: SliverToBoxAdapter(
                         child: Text(
                           'Modules',
@@ -119,9 +148,9 @@ class _TabHomeState extends State<TabHome> {
                       sliver: SliverGrid(
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 2,
-                          mainAxisSpacing: 12,
-                          crossAxisSpacing: 12,
-                          childAspectRatio: 1.05,
+                          mainAxisSpacing: 14,
+                          crossAxisSpacing: 14,
+                          childAspectRatio: 1.0,
                         ),
                         delegate: SliverChildListDelegate([
                           _FeatureCard(
@@ -523,26 +552,26 @@ class _FeatureCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(20),
       elevation: 0,
       shadowColor: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         child: Ink(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(20),
             border: Border.all(color: AppColors.onSurface.withOpacity(0.06)),
             boxShadow: [
               BoxShadow(
                 color: color.withOpacity(0.08),
-                blurRadius: 16,
-                offset: const Offset(0, 6),
+                blurRadius: 18,
+                offset: const Offset(0, 7),
               ),
             ],
           ),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -555,11 +584,16 @@ class _FeatureCard extends StatelessWidget {
                   child: Icon(icon, color: color, size: 26),
                 ),
                 const Spacer(),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Icon(Icons.north_east_rounded, size: 16, color: color.withOpacity(0.75)),
+                ),
+                const SizedBox(height: 6),
                 Text(
                   title,
                   style: const TextStyle(
                     fontWeight: FontWeight.w700,
-                    fontSize: 15,
+                    fontSize: 15.5,
                     height: 1.2,
                   ),
                   maxLines: 1,

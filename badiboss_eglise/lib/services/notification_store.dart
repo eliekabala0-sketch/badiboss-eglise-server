@@ -64,7 +64,7 @@ final class NotificationStore {
   static Future<List<AppNotification>> loadAll() async {
     final s = await const SessionStore().read();
     final cc = (s?.churchCode ?? '').trim();
-    if (cc.isEmpty) return <AppNotification>[];
+    if (cc.isEmpty || (s?.token ?? '').trim().isEmpty) return <AppNotification>[];
     try {
       final t = await _token();
       final uri = Uri.parse('${Config.baseUrl}/church/notifications/list');
@@ -139,7 +139,9 @@ final class NotificationStore {
   /// IDs de groupes (`member_groups`) dont le membre courant fait partie (via [member_number] profil).
   static Future<List<String>> loadGroupIdsForCurrentUser() async {
     final s = await const SessionStore().read();
-    if (s == null || (s.churchCode ?? '').trim().isEmpty) return <String>[];
+    if (s == null || (s.churchCode ?? '').trim().isEmpty || s.token.trim().isEmpty) {
+      return <String>[];
+    }
     var mn = '';
     try {
       final d = await ChurchApi.getJson('/me/profile');
