@@ -143,32 +143,45 @@ final class _AppShellState extends State<AppShell> {
             ),
       bottomNavigationBar: (_tabs.length <= 1)
           ? null
-          : BottomNavigationBar(
-              currentIndex: _currentIndex,
-              onTap: (i) {
-                setState(() => _currentIndex = i);
-                if (i < _tabs.length && _tabs[i].label == 'Membres') {
-                  MemberListRefresh.bump();
-                }
-              },
-              type: BottomNavigationBarType.fixed,
-              items: _tabs
-                  .map(
-                    (t) => BottomNavigationBarItem(
-                      icon: t.label == 'Profil'
-                          ? Badge(
-                              isLabelVisible: _unread > 0,
-                              label: Text('$_unread'),
-                              child: Icon(t.icon),
-                            )
-                          : Icon(t.icon),
-                      label: t.label,
-                    ),
-                  )
-                  .toList(),
+          : SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: BottomNavigationBar(
+                    currentIndex: _currentIndex,
+                    onTap: (i) {
+                      setState(() => _currentIndex = i);
+                      if (i < _tabs.length && _tabs[i].label == 'Membres') {
+                        MemberListRefresh.bump();
+                      }
+                    },
+                    type: BottomNavigationBarType.fixed,
+                    items: _tabs
+                        .map(
+                          (t) => BottomNavigationBarItem(
+                            icon: t.label == 'Profil'
+                                ? Badge(
+                                    isLabelVisible: _unread > 0,
+                                    label: Text('$_unread'),
+                                    child: Icon(t.icon),
+                                  )
+                                : Icon(t.icon),
+                            label: t.label,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ),
             ),
       persistentFooterButtons: [
-        if (s != null) Text('Connecté: ${s.phone} • ${s.roleName}', style: const TextStyle(fontSize: 11)),
+        if (s != null)
+          Text(
+            'Connecté: ${s.phone} • ${s.roleName}',
+            style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+          ),
         if (_status.trim().isNotEmpty)
           Text(
             _status,

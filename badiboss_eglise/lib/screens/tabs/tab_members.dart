@@ -665,19 +665,22 @@ class _TabMembersState extends State<TabMembers> {
               : Column(
                   children: [
                     if ((_error ?? '').trim().isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                        child: Text(
-                          _error!,
-                          style: const TextStyle(color: Colors.orange),
+                      Card(
+                        margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                        color: Colors.orange.shade50,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            _error!,
+                            style: const TextStyle(color: Colors.orange),
+                          ),
                         ),
                       ),
                     Padding(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                       child: TextField(
                         decoration: const InputDecoration(
                           prefixIcon: Icon(Icons.search),
-                          border: OutlineInputBorder(),
                           hintText: "Rechercher (code, nom, téléphone...)",
                         ),
                         onChanged: (v) => setState(() => _query = v),
@@ -726,9 +729,10 @@ class _TabMembersState extends State<TabMembers> {
                       child: items.isEmpty
                           ? const Center(child: Text("Aucun membre."))
                           : ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(10, 4, 10, 16),
                               itemCount: items.length,
                               separatorBuilder: (_, __) =>
-                                  const Divider(height: 1),
+                                  const SizedBox(height: 8),
                               itemBuilder: (context, i) {
                                 final m = items[i];
                                 final title = "${m.id} • ${m.fullName}";
@@ -736,46 +740,48 @@ class _TabMembersState extends State<TabMembers> {
                                     "${m.commune} • ${m.quartier} • ${m.zone}\n"
                                     "Rôle: ${m.role} • ${_regularityLabel(m)} (${m.regularityScore?.toStringAsFixed(0) ?? "-" }%) • ${_trendLabel(m)}"
                                     "${m.birthDateIso.isNotEmpty ? " • Âge: ${_ageFromIso(m.birthDateIso)}" : ""}";
-                                return ListTile(
-                                  title: Text(title,
-                                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  subtitle: Text(subtitle),
-                                  isThreeLine: true,
-                                  onTap: () => _openMemberDetails(m),
-                                  trailing: _isAdmin
-                                      ? PopupMenuButton<String>(
-                                          onSelected: (v) async {
-                                            if (v == 'edit') await _editMember(m);
-                                            if (v == 'approve') await _approve(m);
-                                            if (v == 'suspend') await _suspend(m);
-                                            if (v == 'ban') await _ban(m);
-                                            if (v == 'delete') await _delete(m);
-                                          },
-                                          itemBuilder: (_) => [
-                                            const PopupMenuItem(
-                                              value: 'edit',
-                                              child: Text("Modifier"),
-                                            ),
-                                            if (m.status == MemberStatus.pending)
+                                return Card(
+                                  margin: EdgeInsets.zero,
+                                  child: ListTile(
+                                    title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                    subtitle: Text(subtitle),
+                                    isThreeLine: true,
+                                    onTap: () => _openMemberDetails(m),
+                                    trailing: _isAdmin
+                                        ? PopupMenuButton<String>(
+                                            onSelected: (v) async {
+                                              if (v == 'edit') await _editMember(m);
+                                              if (v == 'approve') await _approve(m);
+                                              if (v == 'suspend') await _suspend(m);
+                                              if (v == 'ban') await _ban(m);
+                                              if (v == 'delete') await _delete(m);
+                                            },
+                                            itemBuilder: (_) => [
                                               const PopupMenuItem(
-                                                value: 'approve',
-                                                child: Text("Valider"),
+                                                value: 'edit',
+                                                child: Text("Modifier"),
                                               ),
-                                            const PopupMenuItem(
-                                              value: 'suspend',
-                                              child: Text("Suspendre"),
-                                            ),
-                                            const PopupMenuItem(
-                                              value: 'ban',
-                                              child: Text("Bannir"),
-                                            ),
-                                            const PopupMenuItem(
-                                              value: 'delete',
-                                              child: Text("Supprimer"),
-                                            ),
-                                          ],
-                                        )
-                                      : null,
+                                              if (m.status == MemberStatus.pending)
+                                                const PopupMenuItem(
+                                                  value: 'approve',
+                                                  child: Text("Valider"),
+                                                ),
+                                              const PopupMenuItem(
+                                                value: 'suspend',
+                                                child: Text("Suspendre"),
+                                              ),
+                                              const PopupMenuItem(
+                                                value: 'ban',
+                                                child: Text("Bannir"),
+                                              ),
+                                              const PopupMenuItem(
+                                                value: 'delete',
+                                                child: Text("Supprimer"),
+                                              ),
+                                            ],
+                                          )
+                                        : null,
+                                  ),
                                 );
                               },
                             ),

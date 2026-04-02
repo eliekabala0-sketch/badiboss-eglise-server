@@ -6,16 +6,18 @@ import 'package:flutter/material.dart';
 final class AppColors {
   const AppColors._();
 
-  /// Vert principal (fond/logo)
-  static const Color primary = Color(0xFF2F5D50);
+  /// Vert principal (premium, plus profond)
+  static const Color primary = Color(0xFF1F4D43);
 
-  /// Or / doré (lettres B)
-  static const Color gold = Color(0xFFB58B2A);
+  /// Doré adouci pour accents
+  static const Color gold = Color(0xFFC89B3C);
 
-  /// Bordeaux (texte “BadiBoss”)
-  static const Color burgundy = Color(0xFF7A1E2C);
+  /// Bordeaux moderne
+  static const Color burgundy = Color(0xFF6F2031);
 
   /// Surfaces
-  static const Color surface = Color(0xFFF7F6F2);
-  static const Color onSurface = Color(0xFF1C1C1C);
+  static const Color surface = Color(0xFFF4F6F8);
+  static const Color card = Color(0xFFFFFFFF);
+  static const Color onSurface = Color(0xFF1B2430);
+  static const Color mutedText = Color(0xFF5F6B7A);
 }

@@ -204,17 +204,35 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
               padding: const EdgeInsets.all(12),
               children: [
                 Card(
-                  child: ListTile(
-                    title: Text('Église: ${c.churchName} (${c.churchCode})'),
-                    subtitle: Text(
-                      'Plan: ${c.planName}\n'
-                      'État: ${c.status} • Paiement: ${c.paymentState}\n'
-                      'Début: ${c.startedAtIso.length >= 10 ? c.startedAtIso.substring(0, 10) : c.startedAtIso} • '
-                      'Expire: ${c.expiresAtIso.length >= 10 ? c.expiresAtIso.substring(0, 10) : c.expiresAtIso}\n'
-                      'Grâce: ${c.graceDays}j • Fin grâce: ${c.graceEndsAtIso.length >= 10 ? c.graceEndsAtIso.substring(0, 10) : c.graceEndsAtIso}\n'
-                      'Jours restants: ${_serverDaysLeft ?? _daysLeft(c.expiresAtIso)}',
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Église: ${c.churchName} (${c.churchCode})',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            Chip(label: Text('Plan: ${c.planName}')),
+                            Chip(label: Text('État: ${c.status}')),
+                            Chip(label: Text('Paiement: ${c.paymentState}')),
+                            Chip(label: Text('Jours restants: ${_serverDaysLeft ?? _daysLeft(c.expiresAtIso)}')),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'Début: ${c.startedAtIso.length >= 10 ? c.startedAtIso.substring(0, 10) : c.startedAtIso}\n'
+                          'Expire: ${c.expiresAtIso.length >= 10 ? c.expiresAtIso.substring(0, 10) : c.expiresAtIso}\n'
+                          'Grâce: ${c.graceDays}j • Fin grâce: ${c.graceEndsAtIso.length >= 10 ? c.graceEndsAtIso.substring(0, 10) : c.graceEndsAtIso}',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.78), height: 1.35),
+                        ),
+                      ],
                     ),
-                    isThreeLine: true,
                   ),
                 ),
                 if (reminder.isNotEmpty)
@@ -231,8 +249,8 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
                     padding: const EdgeInsets.only(top: 6, bottom: 6),
                     child: Text(_status, style: const TextStyle(color: Colors.green)),
                   ),
-                const SizedBox(height: 8),
-                const Text('Choisir un abonnement', style: TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 14),
+                const Text('Choisir un abonnement', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                 const SizedBox(height: 8),
                 ..._plans.map(
                   (p) => Card(
@@ -246,7 +264,7 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 14),
                 Row(
                   children: [
                     Expanded(
