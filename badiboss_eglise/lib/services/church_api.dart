@@ -5,14 +5,26 @@ import 'package:http/http.dart' as http;
 import '../auth/stores/session_store.dart';
 import '../core/config.dart';
 
+final class SessionExpiredException implements Exception {
+  final String message;
+  const SessionExpiredException([this.message = 'Session expirée']);
+
+  @override
+  String toString() => message;
+}
+
 /// Appels HTTP authentifiés vers `server_multichurch.py` (hors login public).
 final class ChurchApi {
   const ChurchApi._();
 
-  static Future<String> _token() async {
+  static Future<String?> readToken() async {
     final s = await const SessionStore().read();
-    final t = (s?.token ?? '').trim();
-    if (t.isEmpty) throw StateError('token manquant');
+    return (s?.token ?? '').trim();
+  }
+
+  static Future<String> _token() async {
+    final t = (await readToken()) ?? '';
+    if (t.isEmpty) throw const SessionExpiredException('Session invalide: token manquant');
     return t;
   }
 
@@ -34,7 +46,14 @@ final class ChurchApi {
   }
 
   static void _ok(http.Response res, Map<String, dynamic> dec) {
-    if (res.statusCode >= 200 && res.statusCode < 300) return;
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return;
+    }
+    if (res.statusCode == 401) {
+      // Session serveur expirée/invalide: purge locale immédiate pour éviter boucles 401.
+      const SessionStore().clear();
+      throw const SessionExpiredException('Session expirée (401)');
+    }
     throw StateError((dec['detail'] ?? dec['message'] ?? res.body).toString());
   }
 

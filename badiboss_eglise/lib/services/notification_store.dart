@@ -55,8 +55,7 @@ final class AppNotification {
 
 final class NotificationStore {
   static Future<String> _token() async {
-    final s = await const SessionStore().read();
-    final t = (s?.token ?? '').trim();
+    final t = (await ChurchApi.readToken()) ?? '';
     if (t.isEmpty) throw StateError('token manquant');
     return t;
   }
@@ -66,22 +65,7 @@ final class NotificationStore {
     final cc = (s?.churchCode ?? '').trim();
     if (cc.isEmpty || (s?.token ?? '').trim().isEmpty) return <AppNotification>[];
     try {
-      final t = await _token();
-      final uri = Uri.parse('${Config.baseUrl}/church/notifications/list');
-      final res = await http
-          .get(
-            uri,
-            headers: {
-              'accept': 'application/json',
-              'Authorization': 'Bearer $t',
-            },
-          )
-          .timeout(Duration(seconds: Config.timeoutSeconds));
-      final text = res.bodyBytes.isEmpty ? '{}' : utf8.decode(res.bodyBytes);
-      final dec = jsonDecode(text);
-      if (dec is! Map || res.statusCode < 200 || res.statusCode >= 300) {
-        return <AppNotification>[];
-      }
+      final dec = await ChurchApi.getJson('/church/notifications/list');
       final list = dec['notifications'];
       if (list is! List) return <AppNotification>[];
       return list.whereType<Map>().map((e) {
@@ -101,6 +85,8 @@ final class NotificationStore {
               reads is List ? reads.map((x) => x.toString()).toList() : <String>[],
         );
       }).toList();
+    } on SessionExpiredException {
+      return <AppNotification>[];
     } catch (_) {
       return <AppNotification>[];
     }
@@ -147,6 +133,8 @@ final class NotificationStore {
       final d = await ChurchApi.getJson('/me/profile');
       final u = d['user'];
       if (u is Map) mn = (u['member_number'] ?? '').toString().trim();
+    } on SessionExpiredException {
+      return <String>[];
     } catch (_) {}
     if (mn.isEmpty) return <String>[];
     try {
@@ -211,6 +199,8 @@ final class NotificationStore {
             body: jsonEncode({'notification_id': notificationId}),
           )
           .timeout(Duration(seconds: Config.timeoutSeconds));
+    } on SessionExpiredException {
+      return;
     } catch (_) {}
   }
 }

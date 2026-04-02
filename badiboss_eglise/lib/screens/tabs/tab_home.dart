@@ -4,6 +4,7 @@ import '../../auth/models/session.dart';
 import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../auth/ui/permission_gate.dart';
+import '../../core/logout_helper.dart';
 
 import '../../auth/ui/access_management_route.dart';
 import '../../auth/ui/role_management_route.dart';
@@ -24,6 +25,7 @@ import '../modules/subscription_page.dart';
 import '../member_groups_page.dart';
 import '../notifications_page.dart';
 import '../../services/notification_store.dart';
+import '../../services/church_api.dart';
 import '../pages/relations_page.dart';
 import '../pages/pasteur_irregulars_page.dart';
 
@@ -76,15 +78,20 @@ class _TabHomeState extends State<TabHome> {
   Future<void> _loadUnread() async {
     final s = _session;
     if (s == null || (s.churchCode ?? '').trim().isEmpty || s.token.trim().isEmpty) return;
-    final gids = await NotificationStore.loadGroupIdsForCurrentUser();
-    final count = await NotificationStore.countUnreadFor(
-      churchCode: s.churchCode!.trim(),
-      role: s.roleName.toLowerCase(),
-      phone: s.phone.trim(),
-      groupIds: gids,
-    );
-    if (!mounted) return;
-    setState(() => _unread = count);
+    try {
+      final gids = await NotificationStore.loadGroupIdsForCurrentUser();
+      final count = await NotificationStore.countUnreadFor(
+        churchCode: s.churchCode!.trim(),
+        role: s.roleName.toLowerCase(),
+        phone: s.phone.trim(),
+        groupIds: gids,
+      );
+      if (!mounted) return;
+      setState(() => _unread = count);
+    } on SessionExpiredException {
+      if (!mounted) return;
+      await LogoutHelper.logoutNow(context);
+    }
   }
 
   @override

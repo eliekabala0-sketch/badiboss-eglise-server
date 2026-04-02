@@ -13,6 +13,7 @@ import 'tabs/tab_presence.dart';
 import 'tabs/tab_reports.dart';
 import 'tabs/tab_profile.dart';
 import '../services/member_list_refresh.dart';
+import '../services/church_api.dart';
 import '../services/notification_store.dart';
 import '../services/session_refresh.dart';
 
@@ -32,6 +33,7 @@ final class _AppShellState extends State<AppShell> {
 
   // Tabs dynamiques (pilotées par permissions)
   late List<_ShellTab> _tabs;
+  final Map<int, Widget> _mountedTabPages = <int, Widget>{};
 
   @override
   void initState() {
@@ -76,15 +78,20 @@ final class _AppShellState extends State<AppShell> {
   Future<void> _loadUnread() async {
     final s = _session;
     if (s == null || (s.churchCode ?? '').trim().isEmpty || s.token.trim().isEmpty) return;
-    final gids = await NotificationStore.loadGroupIdsForCurrentUser();
-    final c = await NotificationStore.countUnreadFor(
-      churchCode: s.churchCode!.trim(),
-      role: s.roleName.toLowerCase(),
-      phone: s.phone.trim(),
-      groupIds: gids,
-    );
-    if (!mounted) return;
-    setState(() => _unread = c);
+    try {
+      final gids = await NotificationStore.loadGroupIdsForCurrentUser();
+      final c = await NotificationStore.countUnreadFor(
+        churchCode: s.churchCode!.trim(),
+        role: s.roleName.toLowerCase(),
+        phone: s.phone.trim(),
+        groupIds: gids,
+      );
+      if (!mounted) return;
+      setState(() => _unread = c);
+    } on SessionExpiredException {
+      if (!mounted) return;
+      await LogoutHelper.logoutNow(context);
+    }
   }
 
   Future<void> _buildTabs() async {
@@ -127,19 +134,26 @@ final class _AppShellState extends State<AppShell> {
     setState(() {
       _tabs = built;
       if (_currentIndex >= _tabs.length) _currentIndex = 0;
+      _mountedTabPages.removeWhere((k, _) => k >= _tabs.length);
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final s = _session;
+    if (_tabs.isNotEmpty) {
+      _mountedTabPages.putIfAbsent(_currentIndex, () => _tabs[_currentIndex].page);
+    }
 
     return Scaffold(
       body: (_tabs.isEmpty)
           ? const Center(child: CircularProgressIndicator())
           : IndexedStack(
               index: _currentIndex,
-              children: _tabs.map((t) => t.page).toList(),
+              children: List<Widget>.generate(
+                _tabs.length,
+                (i) => _mountedTabPages[i] ?? const SizedBox.shrink(),
+              ),
             ),
       bottomNavigationBar: (_tabs.length <= 1)
           ? null
