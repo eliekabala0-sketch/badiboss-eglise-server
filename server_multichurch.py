@@ -382,6 +382,21 @@ def ensure_church_extended_tables():
 
 ensure_church_extended_tables()
 
+def ensure_finance_transactions_columns():
+    conn = db()
+    cur = conn.cursor()
+    cols = cur.execute("PRAGMA table_info(finance_transactions)").fetchall()
+    existing = {c["name"] for c in cols} if cols else set()
+    if "is_deleted" not in existing:
+        try:
+            cur.execute("ALTER TABLE finance_transactions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+ensure_finance_transactions_columns()
+
 def church_document_get(church_id: int, doc_key: str) -> Dict[str, Any]:
     conn = db()
     cur = conn.cursor()
@@ -1300,6 +1315,13 @@ class FinanceTransactionCreateIn(BaseModel):
     currency: str = "CDF"
     note: str = ""
 
+class FinanceTransactionUpdateNoteIn(BaseModel):
+    transaction_id: int
+    note: str = ""
+
+class FinanceTransactionDeleteIn(BaseModel):
+    transaction_id: int
+
 class AttendanceEventCreateIn(BaseModel):
     title: str
     event_date: str  # YYYY-MM-DD
@@ -1588,6 +1610,20 @@ def login(body: LoginIn):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     role = u["role"].upper()
+    # Membres auto-inscrits: connexion refusée tant que la validation admin/pasteur n'est pas faite.
+    if role == "MEMBRE":
+        mn = (u["member_number"] or "").strip()
+        if mn:
+            m = cur.execute(
+                "SELECT is_validated, status FROM members WHERE church_id=? AND member_number=? AND is_deleted=0 LIMIT 1",
+                (church_id, mn),
+            ).fetchone()
+            if m:
+                is_ok = int(m["is_validated"] or 0) == 1
+                st = (m["status"] or "").strip().lower()
+                if not is_ok or st == "pending":
+                    conn.close()
+                    raise HTTPException(status_code=403, detail="Votre compte est en attente de validation")
     user_perms = json.loads(u["permissions_json"] or "[]")
     user_perms = apply_role_restrictions(church_id, role, user_perms)
 
@@ -2846,8 +2882,11 @@ def church_notifications_list(Authorization: Optional[str] = Header(default=None
     ctx = actor_context(Authorization)
     require_perm(ctx, "me.notifications.read")
     church_id = int(ctx["church_id"])
+    role = str(ctx.get("role") or "").strip().upper()
     conn = db()
     cur = conn.cursor()
+    u = cur.execute("SELECT phone FROM users WHERE id=?", (ctx["user_id"],)).fetchone()
+    phone_norm = normalize_phone_rd_congo((u["phone"] or "").strip()) if u and (u["phone"] or "").strip() else ""
     rows = cur.execute(
         "SELECT * FROM church_notifications WHERE church_id=? ORDER BY created_at DESC LIMIT 500",
         (church_id,),
@@ -2856,6 +2895,18 @@ def church_notifications_list(Authorization: Optional[str] = Header(default=None
     out = []
     for r in rows:
         d = dict(r)
+        t = (d.get("target") or "").strip().lower()
+        can_read = False
+        if t == "all" or t == "":
+            can_read = True
+        elif t == "members":
+            can_read = role == "MEMBRE"
+        elif t == "admins":
+            can_read = role != "MEMBRE"
+        elif t.startswith("phone:"):
+            can_read = bool(phone_norm) and (t == f"phone:{phone_norm}")
+        if not can_read:
+            continue
         try:
             d["readByPhones"] = json.loads(d.pop("read_phones_json") or "[]")
         except Exception:
@@ -3043,6 +3094,7 @@ def finance_transaction_create(
     require_perm(ctx, "finance.write")
     church_id = _resolve_finance_church_id(ctx, church_code)
 
+    ensure_finance_transactions_columns()
     ensure_finance_defaults_for_church(church_id)
 
     conn = db()
@@ -3077,8 +3129,8 @@ def finance_transaction_create(
     cur.execute(
         """INSERT INTO finance_transactions(
            church_id, category_id, direction, member_number,
-           amount, currency, note, created_at
-        ) VALUES(?,?,?,?,?,?,?,?)""",
+           amount, currency, note, created_at, is_deleted
+        ) VALUES(?,?,?,?,?,?,?,?,?)""",
         (
             church_id,
             int(body.category_id),
@@ -3088,6 +3140,7 @@ def finance_transaction_create(
             (body.currency or "CDF").strip().upper(),
             (body.note or "").strip(),
             now_ts(),
+            0,
         ),
     )
     tid = cur.lastrowid
@@ -3110,12 +3163,13 @@ def finance_transactions_list(
     ctx = actor_context(Authorization)
     require_perm(ctx, "finance.read")
     church_id = _resolve_finance_church_id(ctx, church_code)
+    ensure_finance_transactions_columns()
     ensure_finance_defaults_for_church(church_id)
 
     conn = db()
     cur = conn.cursor()
 
-    where = ["t.church_id=?"]
+    where = ["t.church_id=?", "COALESCE(t.is_deleted,0)=0"]
     params: List[Any] = [church_id]
 
     if direction:
@@ -3153,17 +3207,18 @@ def finance_summary(
     ctx = actor_context(Authorization)
     require_perm(ctx, "finance.read")
     church_id = _resolve_finance_church_id(ctx, church_code)
+    ensure_finance_transactions_columns()
     ensure_finance_defaults_for_church(church_id)
 
     conn = db()
     cur = conn.cursor()
 
     in_total = cur.execute(
-        "SELECT COALESCE(SUM(amount),0) AS s FROM finance_transactions WHERE church_id=? AND direction='in'",
+        "SELECT COALESCE(SUM(amount),0) AS s FROM finance_transactions WHERE church_id=? AND direction='in' AND COALESCE(is_deleted,0)=0",
         (church_id,),
     ).fetchone()["s"]
     out_total = cur.execute(
-        "SELECT COALESCE(SUM(amount),0) AS s FROM finance_transactions WHERE church_id=? AND direction='out'",
+        "SELECT COALESCE(SUM(amount),0) AS s FROM finance_transactions WHERE church_id=? AND direction='out' AND COALESCE(is_deleted,0)=0",
         (church_id,),
     ).fetchone()["s"]
     net_total = float(in_total) - float(out_total)
@@ -3173,7 +3228,7 @@ def finance_summary(
         SELECT c.id, c.name, c.direction, COALESCE(SUM(t.amount),0) AS total
         FROM finance_transactions t
         JOIN finance_categories c ON c.id=t.category_id
-        WHERE t.church_id=?
+        WHERE t.church_id=? AND COALESCE(t.is_deleted,0)=0
         GROUP BY c.id, c.name, c.direction
         ORDER BY c.direction ASC, c.name ASC
         """,
@@ -3188,6 +3243,72 @@ def finance_summary(
         "net_total": net_total,
         "by_category": [dict(r) for r in by_cat],
     }
+
+@app.post("/church/finance/transactions/update_note")
+def finance_transaction_update_note(
+    body: FinanceTransactionUpdateNoteIn,
+    church_code: Optional[str] = None,
+    Authorization: Optional[str] = Header(default=None),
+):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "finance.write")
+    church_id = _resolve_finance_church_id(ctx, church_code)
+    ensure_finance_transactions_columns()
+
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT id, created_at, is_deleted FROM finance_transactions WHERE church_id=? AND id=?",
+        (church_id, int(body.transaction_id)),
+    ).fetchone()
+    if not row or int(row["is_deleted"] or 0) == 1:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Transaction introuvable")
+    if now_ts() - int(row["created_at"] or 0) > 86400:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Modification refusée: délai 24h dépassé")
+
+    cur.execute(
+        "UPDATE finance_transactions SET note=? WHERE church_id=? AND id=?",
+        ((body.note or "").strip(), church_id, int(body.transaction_id)),
+    )
+    conn.commit()
+    conn.close()
+    audit(church_id, ctx["user_id"], "finance_transaction_update_note", {"transaction_id": int(body.transaction_id)})
+    return {"ok": True}
+
+@app.post("/church/finance/transactions/delete")
+def finance_transaction_delete(
+    body: FinanceTransactionDeleteIn,
+    church_code: Optional[str] = None,
+    Authorization: Optional[str] = Header(default=None),
+):
+    ctx = actor_context(Authorization)
+    require_perm(ctx, "finance.write")
+    church_id = _resolve_finance_church_id(ctx, church_code)
+    ensure_finance_transactions_columns()
+
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT id, created_at, is_deleted FROM finance_transactions WHERE church_id=? AND id=?",
+        (church_id, int(body.transaction_id)),
+    ).fetchone()
+    if not row or int(row["is_deleted"] or 0) == 1:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Transaction introuvable")
+    if now_ts() - int(row["created_at"] or 0) > 86400:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Suppression refusée: délai 24h dépassé")
+
+    cur.execute(
+        "UPDATE finance_transactions SET is_deleted=1 WHERE church_id=? AND id=?",
+        (church_id, int(body.transaction_id)),
+    )
+    conn.commit()
+    conn.close()
+    audit(church_id, ctx["user_id"], "finance_transaction_delete", {"transaction_id": int(body.transaction_id)})
+    return {"ok": True}
 
 @app.post("/church/attendance/event/create")
 def create_attendance_event(body: AttendanceEventCreateIn, Authorization: Optional[str] = Header(default=None)):
