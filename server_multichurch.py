@@ -8,6 +8,8 @@ import time
 import secrets
 import hashlib
 import os
+import math
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Badiboss Multi-Church Server", version="2.0.0")
 
@@ -397,12 +399,26 @@ def church_document_get(church_id: int, doc_key: str) -> Dict[str, Any]:
         return {}
 
 def church_document_set(church_id: int, doc_key: str, payload: Dict[str, Any]) -> None:
+    def _deep_merge(old_v: Any, new_v: Any) -> Any:
+        if isinstance(old_v, dict) and isinstance(new_v, dict):
+            out = dict(old_v)
+            for k, nv in new_v.items():
+                ov = out.get(k)
+                out[k] = _deep_merge(ov, nv) if isinstance(ov, dict) and isinstance(nv, dict) else nv
+            return out
+        return new_v
+
+    base = church_document_get(church_id, doc_key)
+    merged = _deep_merge(base, payload if isinstance(payload, dict) else {})
+    if base and not payload:
+        # Garde-fou non destructif: un payload vide ne doit jamais écraser un document métier existant.
+        return
     conn = db()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO church_documents(church_id, doc_key, payload_json, updated_at) VALUES(?,?,?,?) "
         "ON CONFLICT(church_id, doc_key) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at",
-        (church_id, doc_key, json.dumps(payload, ensure_ascii=False), now_ts()),
+        (church_id, doc_key, json.dumps(merged, ensure_ascii=False), now_ts()),
     )
     conn.commit()
     conn.close()
@@ -2288,12 +2304,6 @@ def sync_pastoral_relations(body: PastoralRelationsSyncIn, Authorization: Option
         )
         n += 1
 
-    placeholders = ",".join("?" * len(incoming_ids))
-    cur.execute(
-        f"DELETE FROM pastoral_relations WHERE church_id=? AND relation_id NOT IN ({placeholders})",
-        (church_id, *incoming_ids),
-    )
-
     try:
         _notify_relations_diff(church_id, prev_map, payloads, sp)
     except Exception:
@@ -2436,6 +2446,47 @@ def super_user_password_reset(body: SuperUserPasswordResetIn, Authorization: Opt
 
 @app.get("/church/billing/subscription")
 def church_billing_subscription_get(Authorization: Optional[str] = Header(default=None)):
+    def _parse_iso_ts(v: Any) -> Optional[float]:
+        s = str(v or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+
+    def _days_left_ceil(end_ts: Optional[float]) -> int:
+        if end_ts is None:
+            return 0
+        rem = end_ts - time.time()
+        return int(math.ceil(rem / 86400.0))
+
+    def _notify_deadline_once(church_id: int, tag: str, title: str, body_txt: str) -> None:
+        day_key = datetime.utcnow().strftime("%Y-%m-%d")
+        marker = f"[{tag}:{day_key}]"
+        conn_n = db()
+        cur_n = conn_n.cursor()
+        exists = cur_n.execute(
+            "SELECT id FROM church_notifications WHERE church_id=? AND body LIKE ? LIMIT 1",
+            (church_id, f"%{marker}%"),
+        ).fetchone()
+        if not exists:
+            cur_n.execute(
+                "INSERT INTO church_notifications(id, church_id, target, title, body, sender_phone, created_at, read_phones_json) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    secrets.token_hex(10),
+                    church_id,
+                    "all",
+                    title[:500],
+                    f"{body_txt} {marker}"[:2000],
+                    "",
+                    now_ts(),
+                    "[]",
+                ),
+            )
+            conn_n.commit()
+        conn_n.close()
+
     ctx = actor_context(Authorization)
     plans_blob = platform_kv_get("saas_plans") or {}
     plan_items = plans_blob.get("items", []) if isinstance(plans_blob, dict) else []
@@ -2445,7 +2496,7 @@ def church_billing_subscription_get(Authorization: Optional[str] = Header(defaul
     church_id = int(ctx["church_id"])
     conn = db()
     cur = conn.cursor()
-    row = cur.execute("SELECT church_code, name FROM churches WHERE id=?", (church_id,)).fetchone()
+    row = cur.execute("SELECT church_code, name, created_at FROM churches WHERE id=?", (church_id,)).fetchone()
     conn.close()
     if not row:
         return {"ok": True, "subscription": None, "plans": plan_items}
@@ -2457,7 +2508,65 @@ def church_billing_subscription_get(Authorization: Optional[str] = Header(defaul
         if str(it.get("churchCode", "")).strip().upper() == cc:
             match = it
             break
-    return {"ok": True, "subscription": match, "plans": plan_items}
+    gl = platform_kv_get("saas_global") or {}
+    trial_days = int(gl.get("trialDaysDefault") or 7)
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    reminder = ""
+    meta: Dict[str, Any] = {"now_iso": now_iso}
+
+    if isinstance(match, dict) and match:
+        sub = dict(match)
+    else:
+        created_ts = int(row["created_at"] or now_ts())
+        start_dt = datetime.utcfromtimestamp(created_ts)
+        end_dt = start_dt + timedelta(days=max(1, trial_days))
+        grace_days = 2
+        sub = {
+            "churchCode": cc,
+            "churchName": str(row["name"] or cc),
+            "status": "trial",
+            "planId": "trial",
+            "planName": "Trial",
+            "trialDays": max(1, trial_days),
+            "graceDays": grace_days,
+            "reminderEnabled": True,
+            "contractExempt": False,
+            "paymentState": "unpaid",
+            "startedAtIso": start_dt.isoformat() + "Z",
+            "expiresAtIso": end_dt.isoformat() + "Z",
+            "graceEndsAtIso": (end_dt + timedelta(days=grace_days)).isoformat() + "Z",
+            "source": "server_default",
+        }
+
+    status = str(sub.get("status") or "pending").strip().lower()
+    reminder_enabled = bool(sub.get("reminderEnabled", True))
+    contract_exempt = bool(sub.get("contractExempt", False))
+    exp_ts = _parse_iso_ts(sub.get("expiresAtIso"))
+    days_left = _days_left_ceil(exp_ts)
+    meta["days_left"] = days_left
+
+    if status == "trial":
+        if days_left <= 2:
+            reminder = f"Essai: il vous reste {max(0, days_left)} jour(s). Passez à la version payante pour éviter la coupure."
+            if reminder_enabled:
+                _notify_deadline_once(
+                    church_id,
+                    "trial_warning",
+                    "Fin d'essai proche",
+                    reminder,
+                )
+    elif status in {"active", "paid"} and not contract_exempt:
+        if days_left <= 2:
+            reminder = f"Abonnement: expiration dans {max(0, days_left)} jour(s). Renouvelez pour éviter la coupure."
+            if reminder_enabled:
+                _notify_deadline_once(
+                    church_id,
+                    "subscription_warning",
+                    "Abonnement bientôt expiré",
+                    reminder,
+                )
+
+    return {"ok": True, "subscription": sub, "plans": plan_items, "subscription_meta": meta, "reminder": reminder}
 
 
 @app.post("/church/billing/subscription")

@@ -18,6 +18,8 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
   SaaSChurchSubscription? _church;
   String _status = '';
   bool _loading = true;
+  String _serverReminder = '';
+  int? _serverDaysLeft;
 
   @override
   void initState() {
@@ -71,6 +73,13 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
         return;
       }
       final raw = dec['subscription'];
+      final meta = dec['subscription_meta'];
+      if (meta is Map) {
+        _serverDaysLeft = int.tryParse('${meta['days_left'] ?? ''}');
+      } else {
+        _serverDaysLeft = null;
+      }
+      _serverReminder = (dec['reminder'] ?? '').toString().trim();
       if (raw is Map && raw.isNotEmpty) {
         _church = SaaSChurchSubscription.fromMap(Map<String, dynamic>.from(raw));
       } else {
@@ -156,6 +165,7 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
     if (c == null) return;
     try {
       await ChurchApi.postJson('/church/billing/subscription', {'subscription': c.toMap()});
+      await _load();
     } catch (e) {
       if (mounted) setState(() => _status = 'Erreur enregistrement: $e');
     }
@@ -175,13 +185,15 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
       );
     }
     final c = _church;
-    String reminder = '';
+    String reminder = _serverReminder;
     if (c != null) {
-      final d = _daysLeft(c.expiresAtIso);
-      if (d <= 0 && !c.contractExempt) {
-        reminder = 'Abonnement expiré. Paiement requis ou période de grâce.';
-      } else if (d <= 7 && c.reminderEnabled) {
-        reminder = 'Rappel: votre abonnement expire dans $d jour(s).';
+      final d = _serverDaysLeft ?? _daysLeft(c.expiresAtIso);
+      if (reminder.isEmpty) {
+        if (d <= 0 && !c.contractExempt) {
+          reminder = 'Abonnement expiré. Paiement requis ou période de grâce.';
+        } else if (d <= 2 && c.reminderEnabled) {
+          reminder = 'Rappel: votre abonnement expire dans $d jour(s).';
+        }
       }
     }
     return Scaffold(
@@ -200,7 +212,7 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
                       'Début: ${c.startedAtIso.length >= 10 ? c.startedAtIso.substring(0, 10) : c.startedAtIso} • '
                       'Expire: ${c.expiresAtIso.length >= 10 ? c.expiresAtIso.substring(0, 10) : c.expiresAtIso}\n'
                       'Grâce: ${c.graceDays}j • Fin grâce: ${c.graceEndsAtIso.length >= 10 ? c.graceEndsAtIso.substring(0, 10) : c.graceEndsAtIso}\n'
-                      'Jours restants: ${_daysLeft(c.expiresAtIso)}',
+                      'Jours restants: ${_serverDaysLeft ?? _daysLeft(c.expiresAtIso)}',
                     ),
                     isThreeLine: true,
                   ),
