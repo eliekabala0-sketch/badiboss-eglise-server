@@ -145,15 +145,58 @@ final class _AppShellState extends State<AppShell> {
       _mountedTabPages.putIfAbsent(_currentIndex, () => _tabs[_currentIndex].page);
     }
 
+    final scheme = Theme.of(context).colorScheme;
+
     return Scaffold(
       body: (_tabs.isEmpty)
           ? const Center(child: CircularProgressIndicator())
-          : IndexedStack(
-              index: _currentIndex,
-              children: List<Widget>.generate(
-                _tabs.length,
-                (i) => _mountedTabPages[i] ?? const SizedBox.shrink(),
-              ),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Material(
+                  color: scheme.surface,
+                  elevation: 0.5,
+                  shadowColor: scheme.shadow.withOpacity(0.12),
+                  child: SafeArea(
+                    bottom: false,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 4, top: 2),
+                      child: Row(
+                        children: [
+                          Icon(Icons.church_rounded, size: 22, color: scheme.primary),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Badiboss Église',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Actualiser les données',
+                            onPressed: s == null
+                                ? null
+                                : () => SessionRefresh.bump(),
+                            icon: const Icon(Icons.refresh_rounded),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentIndex,
+                    children: List<Widget>.generate(
+                      _tabs.length,
+                      (i) => _mountedTabPages[i] ?? const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+              ],
             ),
       bottomNavigationBar: (_tabs.length <= 1)
           ? null

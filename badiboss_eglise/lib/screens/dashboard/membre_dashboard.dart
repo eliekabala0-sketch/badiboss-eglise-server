@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../auth/ui/permission_gate.dart';
 import '../../auth/permissions.dart';
 import '../../core/logout_helper.dart';
+import '../../services/session_refresh.dart';
 import '../member_neighbors_screen.dart';
 import '../member_history_page.dart';
 import '../tabs/tab_profile.dart';
@@ -18,6 +19,11 @@ class MembreDashboard extends StatelessWidget {
         title: const Text('Membre — Tableau de bord'),
         centerTitle: true,
         actions: [
+          IconButton(
+            tooltip: 'Actualiser',
+            onPressed: () => SessionRefresh.bump(),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
           IconButton(
             tooltip: 'Déconnexion',
             onPressed: () => _logout(context),

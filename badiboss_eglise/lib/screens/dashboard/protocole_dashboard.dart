@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 // 🔒 Verrouillage permissions
 import '../../auth/ui/permission_gate.dart';
 import '../../auth/permissions.dart';
+import '../../core/logout_helper.dart';
+import '../../services/session_refresh.dart';
 
 class ProtocoleDashboard extends StatelessWidget {
   const ProtocoleDashboard({super.key});
@@ -13,6 +15,18 @@ class ProtocoleDashboard extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Protocole — Tableau de bord'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'Actualiser',
+            onPressed: () => SessionRefresh.bump(),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+          IconButton(
+            tooltip: 'Déconnexion',
+            onPressed: () => LogoutHelper.logoutNow(context),
+            icon: const Icon(Icons.logout_rounded),
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

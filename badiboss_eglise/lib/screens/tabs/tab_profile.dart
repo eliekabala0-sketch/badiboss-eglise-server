@@ -1,5 +1,7 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../../auth/models/session.dart';
@@ -28,7 +30,18 @@ final class _TabProfileState extends State<TabProfile> {
   @override
   void initState() {
     super.initState();
+    SessionRefresh.tick.addListener(_onGlobalRefreshTick);
     _load();
+  }
+
+  @override
+  void dispose() {
+    SessionRefresh.tick.removeListener(_onGlobalRefreshTick);
+    super.dispose();
+  }
+
+  void _onGlobalRefreshTick() {
+    if (mounted) unawaited(_load());
   }
 
   Future<void> _load() async {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../auth/models/session.dart';
@@ -26,6 +28,7 @@ import '../member_groups_page.dart';
 import '../notifications_page.dart';
 import '../../services/notification_store.dart';
 import '../../services/church_api.dart';
+import '../../services/session_refresh.dart';
 import '../pages/relations_page.dart';
 import '../pages/pasteur_irregulars_page.dart';
 
@@ -45,7 +48,18 @@ class _TabHomeState extends State<TabHome> {
   @override
   void initState() {
     super.initState();
+    SessionRefresh.tick.addListener(_onGlobalRefreshTick);
     _load();
+  }
+
+  @override
+  void dispose() {
+    SessionRefresh.tick.removeListener(_onGlobalRefreshTick);
+    super.dispose();
+  }
+
+  void _onGlobalRefreshTick() {
+    if (mounted) unawaited(_load());
   }
 
   Future<void> _load() async {

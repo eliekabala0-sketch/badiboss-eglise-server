@@ -274,6 +274,13 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         title: const Text('Super Admin — Contrôle global'),
         actions: [
           IconButton(
+            tooltip: 'Actualiser',
+            onPressed: () {
+              _load();
+            },
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+          IconButton(
             tooltip: 'Déconnexion',
             onPressed: () => LogoutHelper.logoutNow(context),
             icon: const Icon(Icons.logout_rounded),

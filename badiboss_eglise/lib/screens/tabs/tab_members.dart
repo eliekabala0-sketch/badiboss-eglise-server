@@ -9,6 +9,7 @@ import '../../auth/stores/session_store.dart';
 import '../../core/active_church_scope.dart';
 import '../../core/config.dart';
 import '../../services/member_list_refresh.dart';
+import '../../services/session_refresh.dart';
 import '../add_member_admin_screen.dart';
 import '../import_members_csv_screen.dart';
 import '../member_neighbors_screen.dart';
@@ -44,6 +45,7 @@ class _TabMembersState extends State<TabMembers> {
   void initState() {
     super.initState();
     MemberListRefresh.tick.addListener(_onMembersRefreshTick);
+    SessionRefresh.tick.addListener(_onGlobalRefreshTick);
     _init();
   }
 
@@ -51,9 +53,14 @@ class _TabMembersState extends State<TabMembers> {
     if (mounted) unawaited(_reload());
   }
 
+  void _onGlobalRefreshTick() {
+    if (mounted) unawaited(_reload());
+  }
+
   @override
   void dispose() {
     MemberListRefresh.tick.removeListener(_onMembersRefreshTick);
+    SessionRefresh.tick.removeListener(_onGlobalRefreshTick);
     super.dispose();
   }
 

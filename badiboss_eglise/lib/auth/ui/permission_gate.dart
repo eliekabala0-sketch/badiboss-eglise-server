@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/session.dart';
 import '../stores/session_store.dart';
 import '../access_control.dart';
+import '../../services/session_refresh.dart';
 import 'access_denied_page.dart';
 
 /// Source de vérité des droits: [AccessControl] (alignée sur le backend terrain).
@@ -27,7 +30,18 @@ class _PermissionGateState extends State<PermissionGate> {
   @override
   void initState() {
     super.initState();
+    SessionRefresh.tick.addListener(_onGlobalRefreshTick);
     _load();
+  }
+
+  @override
+  void dispose() {
+    SessionRefresh.tick.removeListener(_onGlobalRefreshTick);
+    super.dispose();
+  }
+
+  void _onGlobalRefreshTick() {
+    if (mounted) unawaited(_load());
   }
 
   Future<void> _load() async {

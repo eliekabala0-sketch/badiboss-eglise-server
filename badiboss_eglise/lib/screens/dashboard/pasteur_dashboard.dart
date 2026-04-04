@@ -5,6 +5,7 @@ import '../../auth/ui/permission_gate.dart';
 import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../core/logout_helper.dart';
+import '../../services/session_refresh.dart';
 import '../pages/relations_page.dart';
 import '../pages/pasteur_irregulars_page.dart';
 
@@ -18,6 +19,11 @@ class PasteurDashboard extends StatelessWidget {
         title: const Text('Pasteur — Tableau de bord'),
         centerTitle: true,
         actions: [
+          IconButton(
+            tooltip: 'Actualiser',
+            onPressed: () => SessionRefresh.bump(),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
           IconButton(
             tooltip: 'Déconnexion',
             onPressed: () => _logout(context),
