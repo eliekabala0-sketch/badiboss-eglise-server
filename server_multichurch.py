@@ -2425,13 +2425,38 @@ def super_saas_state_get(Authorization: Optional[str] = Header(default=None)):
     if ctx["role"] != "SUPER_ADMIN":
         raise HTTPException(status_code=403, detail="Forbidden")
     plans = platform_kv_get("saas_plans")
-    gl = platform_kv_get("saas_global")
-    subs = platform_kv_get("saas_church_subscriptions")
+    gl: Dict[str, Any] = platform_kv_get("saas_global") or {}
+    subs = platform_kv_get("saas_church_subscriptions") or {}
+    items = list(subs.get("items", [])) if isinstance(subs, dict) else []
+    conn = db()
+    cur = conn.cursor()
+    reconciled: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        m = dict(it)
+        cc = str(m.get("churchCode", "")).strip().upper()
+        if not cc:
+            reconciled.append(m)
+            continue
+        row = cur.execute(
+            "SELECT id, church_code, name, created_at, is_suspended FROM churches WHERE church_code=?",
+            (cc,),
+        ).fetchone()
+        if not row:
+            reconciled.append(m)
+            continue
+        if _subscription_is_paid_like(m):
+            reconciled.append(m)
+            continue
+        rec, _ = _reconcile_subscription_with_truth(m, row, gl)
+        reconciled.append(rec)
+    conn.close()
     return {
         "ok": True,
         "plans": plans.get("items", []) if plans else [],
-        "saas_global": gl or {},
-        "church_subscriptions": subs.get("items", []) if subs else [],
+        "saas_global": gl,
+        "church_subscriptions": reconciled,
     }
 
 @app.post("/super/saas/state")
@@ -2487,7 +2512,7 @@ def _broadcast_audience_match(
 
 
 @app.get("/me/broadcasts")
-def me_broadcasts_get(Authorization: Optional[str] = Header(default=None)):
+def me_broadcasts_get(request: Request, Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
     user_id = int(ctx["user_id"])
     role = str(ctx["role"] or "").upper()
@@ -2506,6 +2531,24 @@ def me_broadcasts_get(Authorization: Optional[str] = Header(default=None)):
         if r0:
             church_code = str(r0["church_code"] or "")
             is_sus = int(r0["is_suspended"] or 0) == 1
+    if role == "SUPER_ADMIN":
+        hdr = (
+            (request.headers.get("x-badiboss-active-church") or request.headers.get("X-Badiboss-Active-Church") or "")
+            .strip()
+            .upper()
+        )
+        if hdr:
+            conn_sc = db()
+            cur_sc = conn_sc.cursor()
+            r_sc = cur_sc.execute(
+                "SELECT id, church_code, is_suspended FROM churches WHERE church_code=?",
+                (hdr,),
+            ).fetchone()
+            conn_sc.close()
+            if r_sc:
+                church_id = int(r_sc["id"])
+                church_code = str(r_sc["church_code"] or "")
+                is_sus = int(r_sc["is_suspended"] or 0) == 1
 
     conn = db()
     cur = conn.cursor()
@@ -2528,7 +2571,10 @@ def me_broadcasts_get(Authorization: Optional[str] = Header(default=None)):
         aud = str(row["audience"] or "all")
         if not _broadcast_audience_match(aud, role, church_id, church_code, is_sus):
             continue
-        d = dict(row)
+        try:
+            d = {k: row[k] for k in row.keys()}
+        except Exception:
+            d = dict(row)
         for k in ("show_on_open", "dismissible", "created_at", "expires_at"):
             if k in d and d[k] is not None and k != "expires_at":
                 try:

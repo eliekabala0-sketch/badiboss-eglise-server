@@ -42,6 +42,9 @@ final class GlobalBroadcast {
 final class GlobalBroadcastsService {
   const GlobalBroadcastsService._();
 
+  /// Évite les doubles affichages (ex. TabHome + dashboard) pour la même diffusion dans la session.
+  static final Set<String> _shownOnOpenIds = <String>{};
+
   static Future<List<GlobalBroadcast>> fetch() async {
     try {
       final dec = await ChurchApi.getJson('/me/broadcasts');
@@ -62,7 +65,18 @@ final class GlobalBroadcastsService {
   static Future<void> dismiss(String broadcastId) async {
     try {
       await ChurchApi.postJson('/me/broadcasts/dismiss', {'broadcast_id': broadcastId});
+      _shownOnOpenIds.remove(broadcastId);
     } catch (_) {}
+  }
+
+  static void scheduleAfterFirstFrame(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!context.mounted) return;
+      final br = await fetch();
+      final open = br.where((x) => x.showOnOpen).toList();
+      if (!context.mounted || open.isEmpty) return;
+      await presentOnOpen(context, open);
+    });
   }
 
   /// Affiche les diffusions `show_on_open` — notifications/messages en dialogue, communiqués en bannière.
@@ -70,6 +84,7 @@ final class GlobalBroadcastsService {
     if (!context.mounted || items.isEmpty) return;
     for (final b in items) {
       if (!b.showOnOpen || !context.mounted) continue;
+      if (_shownOnOpenIds.contains(b.id)) continue;
       if (b.kind == 'communique') {
         await showModalBottomSheet<void>(
           context: context,
@@ -119,6 +134,7 @@ final class GlobalBroadcastsService {
             ),
           ),
         );
+        _shownOnOpenIds.add(b.id);
         continue;
       }
       await showDialog<void>(
@@ -158,6 +174,7 @@ final class GlobalBroadcastsService {
           ],
         ),
       );
+      _shownOnOpenIds.add(b.id);
     }
   }
 }

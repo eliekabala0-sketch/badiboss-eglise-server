@@ -6,6 +6,7 @@ import '../../auth/permissions.dart';
 import '../../auth/stores/session_store.dart';
 import '../../core/logout_helper.dart';
 import '../../services/session_refresh.dart';
+import '../../widgets/global_broadcasts_bootstrap.dart';
 import '../pages/relations_page.dart';
 import '../pages/pasteur_irregulars_page.dart';
 
@@ -14,7 +15,8 @@ class PasteurDashboard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return GlobalBroadcastsBootstrap(
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('Pasteur — Tableau de bord'),
         centerTitle: true,
@@ -177,6 +179,7 @@ class PasteurDashboard extends StatelessWidget {
           ),
         ],
       ),
+    ),
     );
   }
 

@@ -5,13 +5,15 @@ import '../../auth/ui/permission_gate.dart';
 import '../../auth/permissions.dart';
 import '../../core/logout_helper.dart';
 import '../../services/session_refresh.dart';
+import '../../widgets/global_broadcasts_bootstrap.dart';
 
 class ProtocoleDashboard extends StatelessWidget {
   const ProtocoleDashboard({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return GlobalBroadcastsBootstrap(
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('Protocole — Tableau de bord'),
         centerTitle: true,
@@ -71,6 +73,7 @@ class ProtocoleDashboard extends StatelessWidget {
           ),
         ],
       ),
+    ),
     );
   }
 }

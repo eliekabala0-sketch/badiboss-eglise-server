@@ -2,8 +2,10 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../auth/models/user_role.dart';
 import '../auth/stores/session_store.dart';
 import '../core/config.dart';
+import 'church_service.dart';
 
 final class SessionExpiredException implements Exception {
   final String message;
@@ -33,8 +35,23 @@ final class ChurchApi {
         'Authorization': 'Bearer $token',
       };
 
-  static Map<String, String> _jsonHeaders(String token) => {
-        ..._headers(token),
+  /// Super admin : église « visitée » (ChurchService) pour le ciblage API (ex. /me/broadcasts).
+  static Future<Map<String, String>> _scopedHeaders(String token) async {
+    final h = _headers(token);
+    try {
+      final s = await const SessionStore().read();
+      if (s != null && s.role == UserRole.superAdmin) {
+        final cc = ChurchService.getChurchCode().trim();
+        if (cc.isNotEmpty) {
+          h['X-Badiboss-Active-Church'] = cc.toUpperCase();
+        }
+      }
+    } catch (_) {}
+    return h;
+  }
+
+  static Future<Map<String, String>> _jsonScopedHeaders(String token) async => {
+        ...(await _scopedHeaders(token)),
         'Content-Type': 'application/json',
       };
 
@@ -60,7 +77,7 @@ final class ChurchApi {
   static Future<Map<String, dynamic>> getJson(String path) async {
     final t = await _token();
     final uri = Uri.parse('${Config.baseUrl}$path');
-    final res = await http.get(uri, headers: _headers(t)).timeout(Duration(seconds: Config.timeoutSeconds));
+    final res = await http.get(uri, headers: await _scopedHeaders(t)).timeout(Duration(seconds: Config.timeoutSeconds));
     final dec = _decodeMap(res);
     _ok(res, dec);
     return dec;
@@ -70,7 +87,7 @@ final class ChurchApi {
     final t = await _token();
     final uri = Uri.parse('${Config.baseUrl}$path');
     final res = await http
-        .post(uri, headers: _jsonHeaders(t), body: jsonEncode(body))
+        .post(uri, headers: await _jsonScopedHeaders(t), body: jsonEncode(body))
         .timeout(Duration(seconds: Config.timeoutSeconds));
     final dec = _decodeMap(res);
     _ok(res, dec);
