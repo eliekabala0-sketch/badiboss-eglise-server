@@ -1,3 +1,7 @@
 *.pyc
 __pycache__/
 .env
+
+# Base SQLite locale / terrain (données, ne pas versionner)
+badiboss_multichurch.db
+*.db
