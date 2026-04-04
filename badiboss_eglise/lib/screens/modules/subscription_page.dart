@@ -83,27 +83,9 @@ final class _SubscriptionPageState extends State<SubscriptionPage> {
       if (raw is Map && raw.isNotEmpty) {
         _church = SaaSChurchSubscription.fromMap(Map<String, dynamic>.from(raw));
       } else {
-        final now = DateTime.now();
-        final plan = _plans.isNotEmpty ? _plans.first : (await SaaSStore.loadPlans()).first;
-        _church = SaaSChurchSubscription(
-          churchCode: cc,
-          churchName: cc,
-          status: 'trial',
-          planId: plan.id,
-          planName: plan.name,
-          trialDays: 7,
-          graceDays: 2,
-          reminderEnabled: true,
-          contractExempt: false,
-          paymentState: 'unpaid',
-          startedAtIso: now.toIso8601String(),
-          expiresAtIso: now.add(const Duration(days: 7)).toIso8601String(),
-          graceEndsAtIso: now.add(const Duration(days: 9)).toIso8601String(),
-          source: 'self_service',
-        );
-        await ChurchApi.postJson('/church/billing/subscription', {
-          'subscription': _church!.toMap(),
-        });
+        _church = null;
+        _status = 'Abonnement: aucune donnée serveur (vérifiez la connexion ou les droits).'
+            ' Les jours restants sont calculés côté serveur à partir de la date de création de l’église pour l’essai.';
       }
     } catch (e) {
       if (!mounted) return;

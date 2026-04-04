@@ -377,6 +377,29 @@ def ensure_church_extended_tables():
       updated_at INTEGER NOT NULL
     )
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS global_broadcasts(
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      image_url TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'notification',
+      audience TEXT NOT NULL DEFAULT 'all',
+      show_on_open INTEGER NOT NULL DEFAULT 1,
+      dismissible INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_broadcast_dismissals(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      broadcast_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, broadcast_id)
+    )
+    """)
     conn.commit()
     conn.close()
 
@@ -1381,6 +1404,22 @@ class SuperUserPasswordResetIn(BaseModel):
 
 class ChurchBillingUpsertIn(BaseModel):
     subscription: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SuperBroadcastCreateIn(BaseModel):
+    title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    image_url: str = ""
+    kind: str = "notification"
+    audience: str = "all"
+    show_on_open: bool = True
+    dismissible: bool = True
+    ttl_hours: Optional[int] = None
+
+
+class BroadcastDismissIn(BaseModel):
+    broadcast_id: str = Field(..., min_length=4)
+
 
 # ---------------------------
 # Endpoints
@@ -2409,6 +2448,152 @@ def super_saas_state_set(body: SuperSaaSStateIn, Authorization: Optional[str] = 
     audit(None, None, "super_saas_state", {})
     return {"ok": True}
 
+
+def _broadcast_audience_match(
+    aud: str,
+    role: str,
+    church_id: Optional[int],
+    church_code: Optional[str],
+    is_suspended_church: bool,
+) -> bool:
+    a = (aud or "all").strip().lower()
+    role_u = (role or "").upper()
+
+    if a in ("all", "everyone", "tous", "all_users"):
+        return True
+    if a in ("super_admins", "super_admin"):
+        return role_u == "SUPER_ADMIN"
+    if a in ("admins", "administrateurs", "administrations"):
+        return role_u in ("SECRETAIRE", "FINANCE", "SUPER_ADMIN")
+    if a in ("pasteurs", "pasteur", "pastors"):
+        return role_u == "PASTEUR_RESPONSABLE"
+    if a in ("church_members", "membres", "all_members", "tous_membres"):
+        return church_id is not None and role_u == "MEMBRE"
+    if a in ("church_all", "eglise_tous", "tous_utilisateurs_eglise"):
+        return church_id is not None and role_u != "SUPER_ADMIN"
+    if a in ("trial_churches", "essai", "eglises_essai"):
+        if church_id is None or not church_code:
+            return False
+        fl = _church_billing_audience_flags(int(church_id), str(church_code), is_suspended_church)
+        return bool(fl["trial"])
+    if a in ("overdue", "retard", "late", "en_retard"):
+        if church_id is None or not church_code:
+            return False
+        fl = _church_billing_audience_flags(int(church_id), str(church_code), is_suspended_church)
+        return bool(fl["overdue"])
+    if a in ("banned", "bannies", "suspendues", "suspended"):
+        return bool(is_suspended_church)
+    return True
+
+
+@app.get("/me/broadcasts")
+def me_broadcasts_get(Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    user_id = int(ctx["user_id"])
+    role = str(ctx["role"] or "").upper()
+    church_id_raw = ctx.get("church_id")
+    church_id: Optional[int] = int(church_id_raw) if church_id_raw is not None else None
+    church_code: Optional[str] = None
+    is_sus = False
+    if church_id is not None:
+        conn0 = db()
+        cur0 = conn0.cursor()
+        r0 = cur0.execute(
+            "SELECT church_code, is_suspended FROM churches WHERE id=?",
+            (church_id,),
+        ).fetchone()
+        conn0.close()
+        if r0:
+            church_code = str(r0["church_code"] or "")
+            is_sus = int(r0["is_suspended"] or 0) == 1
+
+    conn = db()
+    cur = conn.cursor()
+    nowt = now_ts()
+    rows = cur.execute(
+        "SELECT * FROM global_broadcasts WHERE (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 200",
+        (nowt,),
+    ).fetchall()
+    dismissed_rows = cur.execute(
+        "SELECT broadcast_id FROM user_broadcast_dismissals WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    dismissed = {str(x["broadcast_id"]) for x in dismissed_rows}
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        bid = str(row["id"])
+        if bid in dismissed:
+            continue
+        aud = str(row["audience"] or "all")
+        if not _broadcast_audience_match(aud, role, church_id, church_code, is_sus):
+            continue
+        d = dict(row)
+        for k in ("show_on_open", "dismissible", "created_at", "expires_at"):
+            if k in d and d[k] is not None and k != "expires_at":
+                try:
+                    d[k] = int(d[k])
+                except Exception:
+                    pass
+        out.append(d)
+    return {"ok": True, "items": out}
+
+
+@app.post("/me/broadcasts/dismiss")
+def me_broadcasts_dismiss(body: BroadcastDismissIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    user_id = int(ctx["user_id"])
+    bid = body.broadcast_id.strip()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO user_broadcast_dismissals(user_id, broadcast_id, created_at) VALUES(?,?,?)",
+        (user_id, bid, now_ts()),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/super/broadcasts")
+def super_broadcasts_create(body: SuperBroadcastCreateIn, Authorization: Optional[str] = Header(default=None)):
+    ctx = actor_context(Authorization)
+    if ctx["role"] != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    bid = secrets.token_hex(10)
+    exp_at: Optional[int] = None
+    if body.ttl_hours is not None and int(body.ttl_hours) > 0:
+        exp_at = now_ts() + int(body.ttl_hours) * 3600
+    kind = body.kind.strip().lower()
+    if kind not in ("notification", "message", "communique"):
+        kind = "notification"
+    aud = body.audience.strip().lower()
+    if not aud:
+        aud = "all"
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO global_broadcasts(id, title, body, image_url, kind, audience, show_on_open, dismissible, created_at, expires_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (
+            bid,
+            body.title.strip()[:500],
+            body.body.strip()[:8000],
+            (body.image_url or "").strip()[:2000],
+            kind,
+            aud[:80],
+            1 if body.show_on_open else 0,
+            1 if body.dismissible else 0,
+            now_ts(),
+            exp_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    audit(None, None, "super_broadcast_create", {"id": bid, "audience": aud, "kind": kind})
+    return {"ok": True, "id": bid}
+
+
 @app.get("/church/users/list")
 def church_users_list(Authorization: Optional[str] = Header(default=None)):
     ctx = actor_context(Authorization)
@@ -2480,22 +2665,162 @@ def super_user_password_reset(body: SuperUserPasswordResetIn, Authorization: Opt
     return {"ok": True, "church_code": body.church_code.strip(), "phone": phone_norm}
 
 
+def _parse_iso_ts_safe(v: Any) -> Optional[float]:
+    s = str(v or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _calendar_days_left_utc(end_ts: Optional[float]) -> int:
+    if end_ts is None:
+        return 0
+    try:
+        end_d = datetime.utcfromtimestamp(float(end_ts)).date()
+        today = datetime.utcnow().date()
+        return int((end_d - today).days)
+    except Exception:
+        return 0
+
+
+def _subscription_is_paid_like(sub: Dict[str, Any]) -> bool:
+    st = str(sub.get("status") or "").strip().lower()
+    ps = str(sub.get("paymentState") or "").strip().lower()
+    pid = str(sub.get("planId") or "").strip().lower()
+    if ps in ("paid", "payé", "paid_invoice"):
+        return True
+    if st in ("active", "paid") and pid not in ("trial", ""):
+        return True
+    if st in ("active", "paid") and pid == "trial" and ps in ("paid", "payé"):
+        return True
+    return False
+
+
+def _saas_sub_from_kv_for_code(cc_up: str) -> Optional[Dict[str, Any]]:
+    subs = platform_kv_get("saas_church_subscriptions") or {}
+    items = subs.get("items", []) if isinstance(subs, dict) else []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("churchCode", "")).strip().upper() == cc_up:
+            return dict(it)
+    return None
+
+
+def _reconcile_subscription_with_truth(
+    sub: Dict[str, Any],
+    church_row: sqlite3.Row,
+    gl: Dict[str, Any],
+) -> Tuple[Dict[str, Any], bool]:
+    """
+    Ancre l'essai sur churches.created_at pour éviter les startedAt/expires
+    régénérés à « maintenant » (dashboard / app client). Retourne (sub, modified).
+    """
+    if _subscription_is_paid_like(sub):
+        return sub, False
+    if sub.get("anchorTrialToCreated") is False:
+        return sub, False
+    created_ts = int(church_row["created_at"] or now_ts())
+    trial_days = int(sub.get("trialDays") or gl.get("trialDaysDefault") or 7)
+    grace_days = int(sub.get("graceDays") or gl.get("graceDaysDefault") or 2)
+    trial_days = max(1, trial_days)
+    grace_days = max(0, grace_days)
+    start_dt = datetime.utcfromtimestamp(created_ts).replace(microsecond=0)
+    end_dt = start_dt + timedelta(days=trial_days)
+    grace_end = end_dt + timedelta(days=grace_days)
+    canon_start = start_dt.isoformat() + "Z"
+    canon_end = end_dt.isoformat() + "Z"
+    canon_grace = grace_end.isoformat() + "Z"
+    out = dict(sub)
+    out["trialDays"] = trial_days
+    out["graceDays"] = grace_days
+    if str(out.get("status") or "").strip().lower() in ("", "pending"):
+        out["status"] = "trial"
+    if str(out.get("planId") or "").strip() in ("", "trial"):
+        out["planId"] = "trial"
+    modified = (
+        str(out.get("startedAtIso") or "") != canon_start
+        or str(out.get("expiresAtIso") or "") != canon_end
+        or str(out.get("graceEndsAtIso") or "") != canon_grace
+    )
+    out["startedAtIso"] = canon_start
+    out["expiresAtIso"] = canon_end
+    out["graceEndsAtIso"] = canon_grace
+    if not str(out.get("churchCode") or "").strip():
+        out["churchCode"] = str(church_row["church_code"] or "").strip().upper()
+    if not str(out.get("churchName") or "").strip():
+        out["churchName"] = str(church_row["name"] or out["churchCode"]).strip()
+    return out, modified
+
+
+def _billing_kv_upsert_subscription(sub: Dict[str, Any]) -> None:
+    cc_up = str(sub.get("churchCode", "")).strip().upper()
+    if not cc_up:
+        return
+    subs = platform_kv_get("saas_church_subscriptions") or {}
+    items = list(subs.get("items", [])) if isinstance(subs, dict) else []
+    replaced = False
+    for i, it in enumerate(items):
+        if str(it.get("churchCode", "")).strip().upper() == cc_up:
+            merged = dict(it) if isinstance(it, dict) else {}
+            merged.update(sub)
+            items[i] = merged
+            replaced = True
+            break
+    if not replaced:
+        items.append(sub)
+    platform_kv_set("saas_church_subscriptions", {"items": items})
+
+
+def _church_billing_audience_flags(church_id: int, church_code: str, is_suspended: bool) -> Dict[str, bool]:
+    """Pour ciblage diffusions (essai / retard / banni)."""
+    conn = db()
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT id, church_code, name, created_at, is_suspended FROM churches WHERE id=?",
+        (church_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"trial": False, "overdue": False, "banned": False}
+    sus = int(row["is_suspended"] or 0) == 1 or bool(is_suspended)
+    if sus:
+        return {"trial": False, "overdue": False, "banned": True}
+    gl = platform_kv_get("saas_global") or {}
+    cc_up = church_code.strip().upper()
+    sub = _saas_sub_from_kv_for_code(cc_up) or {}
+    if not sub:
+        trial_days = int(gl.get("trialDaysDefault") or 7)
+        created_ts = int(row["created_at"] or now_ts())
+        start_dt = datetime.utcfromtimestamp(created_ts).replace(microsecond=0)
+        end_dt = start_dt + timedelta(days=max(1, trial_days))
+        exp_ts = end_dt.timestamp()
+        days_left = _calendar_days_left_utc(exp_ts)
+        return {"trial": bool(days_left >= 0), "overdue": bool(days_left < 0), "banned": False}
+    if _subscription_is_paid_like(sub):
+        exp_ts = _parse_iso_ts_safe(sub.get("expiresAtIso"))
+        days_left = _calendar_days_left_utc(exp_ts)
+        st = str(sub.get("status") or "").strip().lower()
+        trial_like = st == "trial"
+    else:
+        rec, _ = _reconcile_subscription_with_truth(dict(sub), row, gl)
+        exp_ts = _parse_iso_ts_safe(rec.get("expiresAtIso"))
+        days_left = _calendar_days_left_utc(exp_ts)
+        trial_like = True
+    return {
+        "trial": bool(trial_like and days_left >= 0),
+        "overdue": bool(days_left < 0),
+        "banned": False,
+    }
+
+
 @app.get("/church/billing/subscription")
 def church_billing_subscription_get(Authorization: Optional[str] = Header(default=None)):
     def _parse_iso_ts(v: Any) -> Optional[float]:
-        s = str(v or "").strip()
-        if not s:
-            return None
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-        except Exception:
-            return None
-
-    def _days_left_ceil(end_ts: Optional[float]) -> int:
-        if end_ts is None:
-            return 0
-        rem = end_ts - time.time()
-        return int(math.ceil(rem / 86400.0))
+        return _parse_iso_ts_safe(v)
 
     def _notify_deadline_once(church_id: int, tag: str, title: str, body_txt: str) -> None:
         day_key = datetime.utcnow().strftime("%Y-%m-%d")
@@ -2550,13 +2875,14 @@ def church_billing_subscription_get(Authorization: Optional[str] = Header(defaul
     reminder = ""
     meta: Dict[str, Any] = {"now_iso": now_iso}
 
+    grace_days_def = int(gl.get("graceDaysDefault") or 2)
     if isinstance(match, dict) and match:
         sub = dict(match)
     else:
         created_ts = int(row["created_at"] or now_ts())
-        start_dt = datetime.utcfromtimestamp(created_ts)
+        start_dt = datetime.utcfromtimestamp(created_ts).replace(microsecond=0)
         end_dt = start_dt + timedelta(days=max(1, trial_days))
-        grace_days = 2
+        gdays = max(0, grace_days_def)
         sub = {
             "churchCode": cc,
             "churchName": str(row["name"] or cc),
@@ -2564,22 +2890,35 @@ def church_billing_subscription_get(Authorization: Optional[str] = Header(defaul
             "planId": "trial",
             "planName": "Trial",
             "trialDays": max(1, trial_days),
-            "graceDays": grace_days,
+            "graceDays": gdays,
             "reminderEnabled": True,
             "contractExempt": False,
             "paymentState": "unpaid",
             "startedAtIso": start_dt.isoformat() + "Z",
             "expiresAtIso": end_dt.isoformat() + "Z",
-            "graceEndsAtIso": (end_dt + timedelta(days=grace_days)).isoformat() + "Z",
+            "graceEndsAtIso": (end_dt + timedelta(days=gdays)).isoformat() + "Z",
             "source": "server_default",
         }
+
+    kv_dirty = False
+    if not _subscription_is_paid_like(sub):
+        sub, kv_dirty = _reconcile_subscription_with_truth(sub, row, gl)
+        if kv_dirty:
+            _billing_kv_upsert_subscription(sub)
 
     status = str(sub.get("status") or "pending").strip().lower()
     reminder_enabled = bool(sub.get("reminderEnabled", True))
     contract_exempt = bool(sub.get("contractExempt", False))
     exp_ts = _parse_iso_ts(sub.get("expiresAtIso"))
-    days_left = _days_left_ceil(exp_ts)
+    start_ts = _parse_iso_ts(sub.get("startedAtIso"))
+    days_left = _calendar_days_left_utc(exp_ts)
     meta["days_left"] = days_left
+    if start_ts is not None:
+        try:
+            sd = datetime.utcfromtimestamp(float(start_ts)).date()
+            meta["elapsed_calendar_days"] = max(0, (datetime.utcnow().date() - sd).days)
+        except Exception:
+            meta["elapsed_calendar_days"] = 0
 
     if status == "trial":
         if days_left <= 2:

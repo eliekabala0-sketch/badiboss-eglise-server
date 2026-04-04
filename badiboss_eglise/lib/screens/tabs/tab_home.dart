@@ -28,6 +28,7 @@ import '../member_groups_page.dart';
 import '../notifications_page.dart';
 import '../../services/notification_store.dart';
 import '../../services/church_api.dart';
+import '../../services/global_broadcasts_service.dart';
 import '../../services/session_refresh.dart';
 import '../pages/relations_page.dart';
 import '../pages/pasteur_irregulars_page.dart';
@@ -77,6 +78,13 @@ class _TabHomeState extends State<TabHome> {
         if (s == null) _status = 'Session introuvable. Reconnecte-toi.';
       });
       await _loadUnread();
+      if (s != null && s.token.trim().isNotEmpty && mounted) {
+        final br = await GlobalBroadcastsService.fetch();
+        final open = br.where((b) => b.showOnOpen).toList();
+        if (open.isNotEmpty && mounted) {
+          await GlobalBroadcastsService.presentOnOpen(context, open);
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {

@@ -3,8 +3,22 @@ import 'package:flutter/material.dart';
 import '../../core/logout_helper.dart';
 import '../../services/church_api.dart';
 import '../../services/church_service.dart';
+import '../../services/global_broadcasts_service.dart';
 import '../../services/saas_store.dart';
 import '../app_shell.dart';
+import 'super_admin_pay_page.dart';
+
+DateTime _churchCreatedUtcFromRow(dynamic raw) {
+  final sec = raw is int ? raw : int.tryParse('$raw') ?? 0;
+  if (sec <= 0) return DateTime.now().toUtc();
+  return DateTime.fromMillisecondsSinceEpoch(sec * 1000, isUtc: true);
+}
+
+String _isoUtcZ(DateTime utc) {
+  final base = utc.toIso8601String();
+  final noMs = base.contains('.') ? base.split('.').first : base;
+  return noMs.endsWith('Z') ? noMs : '${noMs}Z';
+}
 
 class SuperAdminDashboard extends StatefulWidget {
   const SuperAdminDashboard({super.key});
@@ -80,7 +94,6 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
 
       final rows = (decCh['churches'] as List?) ?? [];
       final nextChurches = <_ChurchItem>[];
-      final now = DateTime.now();
       for (final r in rows) {
         if (r is! Map) continue;
         final m = Map<String, dynamic>.from(r);
@@ -92,6 +105,9 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           nextChurches.add(_ChurchItem.fromSaaS(SaaSChurchSubscription.fromMap(sub)));
         } else {
           final tdays = td > 0 ? td : 7;
+          final createdUtc = _churchCreatedUtcFromRow(m['created_at']);
+          final endUtc = createdUtc.add(Duration(days: tdays));
+          final graceUtc = endUtc.add(Duration(days: gd));
           nextChurches.add(
             _ChurchItem(
               code: code,
@@ -99,9 +115,9 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
               status: sus ? 'suspended' : 'trial',
               subscriptionPlan: plans.first.name,
               paymentStatus: 'impayé',
-              startedAtIso: now.toIso8601String(),
-              expiresAtIso: now.add(Duration(days: tdays)).toIso8601String(),
-              graceEndsAtIso: now.add(Duration(days: tdays + gd)).toIso8601String(),
+              startedAtIso: _isoUtcZ(createdUtc),
+              expiresAtIso: _isoUtcZ(endUtc),
+              graceEndsAtIso: _isoUtcZ(graceUtc),
               trialDays: tdays,
               graceDays: gd,
               source: 'server',
@@ -131,6 +147,13 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           ..clear()
           ..addAll(mods ?? <String>{'members', 'presence', 'reports'});
       });
+      try {
+        final br = await GlobalBroadcastsService.fetch();
+        final open = br.where((b) => b.showOnOpen).toList();
+        if (open.isNotEmpty && mounted) {
+          await GlobalBroadcastsService.presentOnOpen(context, open);
+        }
+      } catch (_) {}
     } catch (e) {
       if (!mounted) return;
       setState(() => _status = 'Erreur chargement super: $e');
@@ -158,19 +181,44 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     if (!mounted) return;
     setState(() {
       _activeChurch = c.code;
-      _status = 'Vous êtes entré dans ${c.name} (${c.code}).';
+      _status = 'Ouverture de ${c.name} (${c.code})…';
     });
-    Navigator.of(context).push(
+    await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const AppShell()),
     );
+    if (!mounted) return;
+    final mem = ChurchService.getChurchCode().trim();
+    setState(() {
+      _activeChurch = mem;
+      if (mem.isEmpty) {
+        _status = 'Retour au tableau de bord global.';
+      }
+    });
+    await _load();
   }
 
-  Future<void> _exitChurchContext() async {
+  Future<void> _exitChurchToGlobal() async {
     ChurchService.clear();
+    if (Navigator.of(context).canPop()) {
+      await Navigator.of(context).maybePop();
+    }
     if (!mounted) return;
     setState(() {
       _activeChurch = '';
-      _status = 'Contexte église fermé. Retour multi-églises actif.';
+      _status = 'Tableau de bord global — contexte église fermé.';
+    });
+    await _load();
+  }
+
+  Future<void> _returnToGlobalDashboard() async {
+    ChurchService.clear();
+    if (!mounted) return;
+    setState(() => _status = 'Actualisation du dashboard global…');
+    await _load();
+    if (!mounted) return;
+    setState(() {
+      _activeChurch = ChurchService.getChurchCode().trim();
+      _status = 'Dashboard global à jour.';
     });
   }
 
@@ -299,6 +347,8 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           const SizedBox(height: 10),
           _settingsCard(),
           const SizedBox(height: 10),
+          _globalBroadcastCard(),
+          const SizedBox(height: 10),
           _plansCard(),
           const SizedBox(height: 10),
           _filtersCard(filtered.length),
@@ -345,17 +395,21 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
               runSpacing: 8,
               children: [
                 FilledButton.icon(
-                  onPressed: _activeChurch.isEmpty ? null : _exitChurchContext,
+                  onPressed: _activeChurch.isEmpty ? null : _exitChurchToGlobal,
                   icon: const Icon(Icons.logout_rounded),
                   label: const Text('Sortir de l\'église'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _exitChurchContext,
+                  onPressed: _returnToGlobalDashboard,
                   icon: const Icon(Icons.dashboard_rounded),
                   label: const Text('Retour dashboard global'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: () => setState(() => _status = 'Intégration Badiboss Pay prévue: écran prêt pour branchement API.'),
+                  onPressed: () {
+                    Navigator.of(context).push<void>(
+                      MaterialPageRoute(builder: (_) => const SuperAdminPayPage()),
+                    );
+                  },
                   icon: const Icon(Icons.account_balance_wallet_outlined),
                   label: const Text('Badiboss Pay'),
                 ),
@@ -465,6 +519,138 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         ),
       ),
     );
+  }
+
+  Widget _globalBroadcastCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Diffusion globale', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            const Text(
+              'Types : notification / message / communiqué. Ciblage appliqué côté serveur sur /me/broadcasts.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: _openGlobalBroadcastComposer,
+              icon: const Icon(Icons.campaign_outlined),
+              label: const Text('Nouvelle diffusion'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openGlobalBroadcastComposer() async {
+    final titleCtrl = TextEditingController();
+    final bodyCtrl = TextEditingController();
+    final imageCtrl = TextEditingController();
+    final ttlCtrl = TextEditingController();
+    var kind = 'notification';
+    var audience = 'all';
+    var showOpen = true;
+    var dismissible = true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setL) => AlertDialog(
+          title: const Text('Nouvelle diffusion globale'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Titre')),
+                TextField(
+                  controller: bodyCtrl,
+                  decoration: const InputDecoration(labelText: 'Contenu'),
+                  maxLines: 4,
+                ),
+                TextField(
+                  controller: imageCtrl,
+                  decoration: const InputDecoration(labelText: 'URL image (optionnel)'),
+                ),
+                DropdownButtonFormField<String>(
+                  value: kind,
+                  decoration: const InputDecoration(labelText: 'Type'),
+                  items: const [
+                    DropdownMenuItem(value: 'notification', child: Text('Notification temporaire')),
+                    DropdownMenuItem(value: 'message', child: Text('Message')),
+                    DropdownMenuItem(value: 'communique', child: Text('Communiqué (feuille bas)')),
+                  ],
+                  onChanged: (v) => setL(() => kind = v ?? kind),
+                ),
+                DropdownButtonFormField<String>(
+                  value: audience,
+                  decoration: const InputDecoration(labelText: 'Ciblage'),
+                  items: const [
+                    DropdownMenuItem(value: 'all', child: Text('Tous')),
+                    DropdownMenuItem(value: 'super_admins', child: Text('Super administrateurs')),
+                    DropdownMenuItem(value: 'admins', child: Text('Administrateurs')),
+                    DropdownMenuItem(value: 'pasteurs', child: Text('Pasteurs')),
+                    DropdownMenuItem(value: 'church_members', child: Text('Membres')), 
+                    DropdownMenuItem(value: 'church_all', child: Text('Toute l’église')),
+                    DropdownMenuItem(value: 'trial_churches', child: Text('Églises en essai')),
+                    DropdownMenuItem(value: 'overdue', child: Text('En retard')),
+                    DropdownMenuItem(value: 'banned', child: Text('Suspendues / bannies')),
+                  ],
+                  onChanged: (v) => setL(() => audience = v ?? audience),
+                ),
+                TextField(
+                  controller: ttlCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Expiration (heures, vide = sans limite)'),
+                ),
+                CheckboxListTile(
+                  value: showOpen,
+                  onChanged: (v) => setL(() => showOpen = v ?? true),
+                  title: const Text('Afficher à l’ouverture'),
+                ),
+                CheckboxListTile(
+                  value: dismissible,
+                  onChanged: (v) => setL(() => dismissible = v ?? true),
+                  title: const Text('« Ne plus afficher » disponible'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Publier')),
+          ],
+        ),
+      ),
+    );
+    try {
+      if (ok != true) return;
+      if (titleCtrl.text.trim().isEmpty || bodyCtrl.text.trim().isEmpty) {
+        setState(() => _status = 'Titre et contenu requis.');
+        return;
+      }
+      final th = int.tryParse(ttlCtrl.text.trim());
+      await ChurchApi.postJson('/super/broadcasts', {
+        'title': titleCtrl.text.trim(),
+        'body': bodyCtrl.text.trim(),
+        'image_url': imageCtrl.text.trim(),
+        'kind': kind,
+        'audience': audience,
+        'show_on_open': showOpen,
+        'dismissible': dismissible,
+        if (th != null && th > 0) 'ttl_hours': th,
+      });
+      if (mounted) setState(() => _status = 'Diffusion publiée. Les cibles la verront via /me/broadcasts.');
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Erreur diffusion: $e');
+    } finally {
+      titleCtrl.dispose();
+      bodyCtrl.dispose();
+      imageCtrl.dispose();
+      ttlCtrl.dispose();
+    }
   }
 
   Widget _plansCard() {

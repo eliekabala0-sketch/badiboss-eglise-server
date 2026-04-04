@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../auth/access_control.dart';
 import '../auth/models/session.dart';
+import '../auth/models/user_role.dart';
 import '../auth/permissions.dart';
 import '../auth/stores/session_store.dart';
 import '../core/logout_helper.dart';
@@ -14,6 +15,7 @@ import 'tabs/tab_reports.dart';
 import 'tabs/tab_profile.dart';
 import '../services/member_list_refresh.dart';
 import '../services/church_api.dart';
+import '../services/church_service.dart';
 import '../services/notification_store.dart';
 import '../services/session_refresh.dart';
 
@@ -147,7 +149,14 @@ final class _AppShellState extends State<AppShell> {
 
     final scheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
+    return PopScope(
+      canPop: true,
+      onPopInvoked: (bool didPop) {
+        if (didPop && _session?.role == UserRole.superAdmin) {
+          ChurchService.clear();
+        }
+      },
+      child: Scaffold(
       body: (_tabs.isEmpty)
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -250,6 +259,7 @@ final class _AppShellState extends State<AppShell> {
           label: const Text('Déconnexion'),
         ),
       ],
+    ),
     );
   }
 
